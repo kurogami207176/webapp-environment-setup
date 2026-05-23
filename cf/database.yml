@@ -76,7 +76,7 @@ Parameters:
 # Conditions
 # ─────────────────────────────────────────────────────────────────────────────
 Conditions:
-  IsProduction: !Equals [!Ref Env, "production"]
+#  IsProduction: !Equals [!Ref Env, "production"]
   EnableDeletionProtection: !Equals [!Ref DeletionProtection, "true"]
 
 # ─────────────────────────────────────────────────────────────────────────────
