@@ -303,7 +303,7 @@ Resources:
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "ALB — allow HTTP/HTTPS from internet"
+      GroupDescription: "ALB - allow HTTP/HTTPS from internet"
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -328,7 +328,7 @@ Resources:
   AppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "App tier — allow traffic from ALB only"
+      GroupDescription: "App tier - allow traffic from ALB only"
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -348,7 +348,7 @@ Resources:
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Database tier — allow PostgreSQL from app tier only"
+      GroupDescription: "Database tier - allow PostgreSQL from app tier only"
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
