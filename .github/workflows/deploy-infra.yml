@@ -27,10 +27,6 @@ on:
         description: "App name (stack prefix)"
         required: false
         default: "webapp"
-      max_db_capacity:
-        description: "Aurora max ACUs (production default: 16)"
-        required: false
-        default: "16"
       dry_run:
         description: "Validate templates only — no deploy"
         required: false
@@ -177,23 +173,21 @@ jobs:
 
       - name: Deploy database stack
         run: |
-          # Production gets higher capacity, deletion protection, longer backups
+          # Both environments use minimum capacity (0.5–4 ACUs).
+          # Production additionally enables deletion protection and longer backups.
+          EXTRA_FLAGS=""
           if [[ "${{ env.TARGET_ENV }}" == "production" ]]; then
-            ./bin/deploy-database.sh \
-              --env                 "${{ env.TARGET_ENV }}" \
-              --app-name            "${{ env.APP_NAME }}" \
-              --region              "${{ vars.AWS_REGION }}" \
-              --max-capacity        "${{ inputs.max_db_capacity || '16' }}" \
-              --backup-days         14 \
-              --deletion-protection \
-              ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
-          else
-            ./bin/deploy-database.sh \
-              --env      "${{ env.TARGET_ENV }}" \
-              --app-name "${{ env.APP_NAME }}" \
-              --region   "${{ vars.AWS_REGION }}" \
-              ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
+            EXTRA_FLAGS="--backup-days 14 --deletion-protection"
           fi
+
+          ./bin/deploy-database.sh \
+            --env          "${{ env.TARGET_ENV }}" \
+            --app-name     "${{ env.APP_NAME }}" \
+            --region       "${{ vars.AWS_REGION }}" \
+            --min-capacity 0.5 \
+            --max-capacity 4 \
+            $EXTRA_FLAGS \
+            ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
 
       - name: Summary — database outputs
         if: env.DRY_RUN != 'true'

@@ -192,7 +192,6 @@ Resources:
   # ══════════════════════════════════════════════════════════════════════════
   DbCluster:
     Type: AWS::RDS::DBCluster
-    DependsOn: DbMasterSecret
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
