@@ -2,8 +2,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Network foundation — VPC, 2-AZ public / private / isolated subnets,
   Internet Gateway, single NAT Gateway (private tier), Security Groups.
-  Outputs are exported so downstream stacks (database, ECS, etc.) can
-  import them without hard-coding IDs.
+  Outputs are exported as CloudFormation exports (for stacks in this account)
+  AND as SSM Parameters (for other repos / pipelines that need the IDs
+  without a CloudFormation dependency).
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Parameters
@@ -363,8 +364,176 @@ Resources:
         - Key: Name
           Value: !Sub "${AppName}-${Env}-db-sg"
 
+  # ══════════════════════════════════════════════════════════════════════════
+  # SSM Parameters
+  # Published so any repo / pipeline in this AWS account can resolve network
+  # IDs without taking a CloudFormation stack dependency.
+  #
+  # Path convention: /{AppName}/{Env}/network/{resource}
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ── VPC ──────────────────────────────────────────────────────────────────
+  SsmVpcId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/vpc-id"
+      Type: String
+      Value: !Ref VPC
+      Description: !Sub "VPC ID for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmVpcCidr:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/vpc-cidr"
+      Type: String
+      Value: !GetAtt VPC.CidrBlock
+      Description: !Sub "VPC CIDR block for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  # ── Public subnets ────────────────────────────────────────────────────────
+  SsmPublicSubnet1Id:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/public-subnet-1-id"
+      Type: String
+      Value: !Ref PublicSubnet1
+      Description: !Sub "Public subnet AZ-1 for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmPublicSubnet2Id:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/public-subnet-2-id"
+      Type: String
+      Value: !Ref PublicSubnet2
+      Description: !Sub "Public subnet AZ-2 for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmPublicSubnetIds:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/public-subnet-ids"
+      Type: StringList
+      Value: !Join [",", [!Ref PublicSubnet1, !Ref PublicSubnet2]]
+      Description: !Sub "Comma-separated public subnet IDs for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  # ── Private subnets ───────────────────────────────────────────────────────
+  SsmPrivateSubnet1Id:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/private-subnet-1-id"
+      Type: String
+      Value: !Ref PrivateSubnet1
+      Description: !Sub "Private subnet AZ-1 for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmPrivateSubnet2Id:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/private-subnet-2-id"
+      Type: String
+      Value: !Ref PrivateSubnet2
+      Description: !Sub "Private subnet AZ-2 for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmPrivateSubnetIds:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/private-subnet-ids"
+      Type: StringList
+      Value: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+      Description: !Sub "Comma-separated private subnet IDs for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  # ── Isolated subnets ──────────────────────────────────────────────────────
+  SsmIsolatedSubnet1Id:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/isolated-subnet-1-id"
+      Type: String
+      Value: !Ref IsolatedSubnet1
+      Description: !Sub "Isolated (DB) subnet AZ-1 for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmIsolatedSubnet2Id:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/isolated-subnet-2-id"
+      Type: String
+      Value: !Ref IsolatedSubnet2
+      Description: !Sub "Isolated (DB) subnet AZ-2 for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmIsolatedSubnetIds:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/isolated-subnet-ids"
+      Type: StringList
+      Value: !Join [",", [!Ref IsolatedSubnet1, !Ref IsolatedSubnet2]]
+      Description: !Sub "Comma-separated isolated subnet IDs for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  # ── Security Groups ───────────────────────────────────────────────────────
+  SsmAlbSecurityGroupId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/alb-sg-id"
+      Type: String
+      Value: !Ref AlbSecurityGroup
+      Description: !Sub "ALB security group ID for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmAppSecurityGroupId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/app-sg-id"
+      Type: String
+      Value: !Ref AppSecurityGroup
+      Description: !Sub "App tier security group ID for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmDatabaseSecurityGroupId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/network/db-sg-id"
+      Type: String
+      Value: !Ref DatabaseSecurityGroup
+      Description: !Sub "Database security group ID for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Outputs  (exported so database.yml and other stacks can import them)
+# Outputs  (CloudFormation exports for stacks in the same account/region,
+#           plus SSM parameters above for cross-repo / pipeline access)
 # ─────────────────────────────────────────────────────────────────────────────
 Outputs:
 

@@ -29,13 +29,13 @@ jobs:
       - name: Lint network.yml
         id: lint_network
         run: |
-          cfn_lint cf/network.yml 2>&1 | tee /tmp/lint-network.txt
+          cfn-lint cf/network.yml 2>&1 | tee /tmp/lint-network.txt
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Lint database.yml
         id: lint_database
         run: |
-          cfn_lint cf/database.yml 2>&1 | tee /tmp/lint-database.txt
+          cfn-lint cf/database.yml 2>&1 | tee /tmp/lint-database.txt
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Validate shell scripts (bash -n syntax check)

@@ -76,8 +76,8 @@ jobs:
       - name: Lint CloudFormation templates (cfn-lint)
         run: |
           pip install cfn-lint --quiet
-          cfn_lint cf/network.yml
-          cfn_lint cf/database.yml
+          cfn-lint cf/network.yml
+          cfn-lint cf/database.yml
           echo "✓ Both templates pass cfn-lint"
 
   # ════════════════════════════════════════════════════════════════════════════
