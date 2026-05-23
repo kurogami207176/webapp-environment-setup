@@ -51,11 +51,22 @@ Parameters:
   PostgresEngineVersion:
     Type: String
     Default: "16.6"
-    Description: Aurora-compatible PostgreSQL version.
+    Description: Aurora-compatible PostgreSQL engine version.
     AllowedValues:
       - "16.6"
       - "15.10"
       - "14.15"
+
+  ParameterGroupFamily:
+    Type: String
+    Default: "aurora-postgresql16"
+    Description: >
+      Parameter group family — must match the major version of PostgresEngineVersion.
+      aurora-postgresql16 for 16.x, aurora-postgresql15 for 15.x, aurora-postgresql14 for 14.x.
+    AllowedValues:
+      - "aurora-postgresql16"
+      - "aurora-postgresql15"
+      - "aurora-postgresql14"
 
   # Backup
   BackupRetentionDays:
@@ -88,7 +99,7 @@ Metadata:
       - Label: {default: "Identity"}
         Parameters: [AppName, Env]
       - Label: {default: "Database"}
-        Parameters: [DatabaseName, MasterUsername, PostgresEngineVersion]
+        Parameters: [DatabaseName, MasterUsername, PostgresEngineVersion, ParameterGroupFamily]
       - Label: {default: "Serverless v2 Capacity"}
         Parameters: [MinCapacity, MaxCapacity]
       - Label: {default: "Operations"}
@@ -175,7 +186,7 @@ Resources:
     Type: AWS::RDS::DBClusterParameterGroup
     Properties:
       Description: !Sub "Aurora PostgreSQL cluster params for ${AppName}-${Env}"
-      Family: !Sub "aurora-postgresql${PostgresEngineVersion}"
+      Family: !Ref ParameterGroupFamily
       Parameters:
         # Force SSL connections from all clients
         rds.force_ssl: "1"

@@ -69,7 +69,7 @@ Resources:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: GitHubActionsWebappPolicy
-      Description: !Sub "GitHub Actions — ECR, CloudFormation, IAM, App Runner, DynamoDB, RDS, Secrets Manager for ${AppName}"
+      Description: !Sub "GitHub Actions — ECR, CloudFormation, IAM, App Runner, DynamoDB, RDS, Secrets Manager, Route53, ACM for ${AppName}"
       Users:
         - !Ref GitHubActionsUser
       PolicyDocument:
@@ -123,7 +123,9 @@ Resources:
               - cloudformation:ValidateTemplate
             Resource: "*"
 
-          # CloudFormation — stack operations scoped to webapp-* stacks
+          # CloudFormation — stack operations.
+          # Covers webapp-* and webapp-template-* (app repo stacks) plus
+          # dns-config (shared infra stack deployed by this repo).
           - Sid: CloudFormationStackManagement
             Effect: Allow
             Action:
@@ -143,7 +145,10 @@ Resources:
               - cloudformation:ListChangeSets
               - cloudformation:GetStackPolicy
               - cloudformation:SetStackPolicy
-            Resource: !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/${AppName}-*/*"
+            Resource:
+              - !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/${AppName}-*/*"
+              - !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/${AppName}-template-*/*"
+              - !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/dns-config/*"
 
           # IAM — scoped to webapp-* roles and the GitHub OIDC provider
           - Sid: IAMManagement
@@ -247,6 +252,24 @@ Resources:
               - rds:DescribeDBEngineVersions
               - rds:StartDBCluster
               - rds:StopDBCluster
+            Resource: "*"
+
+          # Route53 + ACM — DNS records and certificate provisioning (dns.yml)
+          - Sid: Route53ACM
+            Effect: Allow
+            Action:
+              - route53:ChangeResourceRecordSets
+              - route53:GetChange
+              - route53:ListHostedZones
+              - route53:ListResourceRecordSets
+              - route53:GetHostedZone
+              - acm:RequestCertificate
+              - acm:DescribeCertificate
+              - acm:DeleteCertificate
+              - acm:ListCertificates
+              - acm:AddTagsToCertificate
+              - acm:RemoveTagsFromCertificate
+              - acm:ListTagsForCertificate
             Resource: "*"
 
           # Secrets Manager — master credentials + rotation
