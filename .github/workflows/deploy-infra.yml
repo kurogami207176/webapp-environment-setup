@@ -60,9 +60,10 @@ jobs:
       - name: Lint CloudFormation templates (cfn-lint)
         run: |
           pip install cfn-lint --quiet
+          cfn-lint cf/dns-config.yml
           cfn-lint cf/network.yml
           cfn-lint cf/database.yml
-          echo "✓ Both templates pass cfn-lint"
+          echo "✓ All templates pass cfn-lint"
 
   # ════════════════════════════════════════════════════════════════════════════
   # 2. Gate — production requires manual approval.
@@ -79,11 +80,38 @@ jobs:
         run: echo "Production deployment approved — proceeding."
 
   # ════════════════════════════════════════════════════════════════════════════
-  # 3. Deploy network stack
+  # 3. Deploy DNS config (hosted zone ID + domain name → SSM)
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy-dns-config:
+    name: Deploy DNS config
+    needs: approve-production
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.1.1
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ vars.AWS_REGION }}
+
+      - name: Deploy DNS config stack
+        run: |
+          ./bin/deploy-dns-config.sh \
+            --region "${{ vars.AWS_REGION }}" \
+            ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 4. Deploy network stack
   # ════════════════════════════════════════════════════════════════════════════
   deploy-network:
     name: Deploy network (production)
-    needs: approve-production
+    needs: deploy-dns-config
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -130,7 +158,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ════════════════════════════════════════════════════════════════════════════
-  # 4. Deploy database stack (runs after network is confirmed healthy)
+  # 5. Deploy database stack (runs after network is confirmed healthy)
   # ════════════════════════════════════════════════════════════════════════════
   deploy-database:
     name: Deploy database (production)

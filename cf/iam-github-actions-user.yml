@@ -2,8 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   IAM user for GitHub Actions CI/CD pipelines, with two least-privilege
   managed policies:
-    - GitHubActionsWebappPolicy        (ECR, CloudFormation, IAM, App Runner, DynamoDB)
-    - GitHubActionsWebappNetworkPolicy (EC2/VPC, ELB, ECS, CloudWatch Logs, SSM)
+    - GitHubActionsWebappPolicy        (ECR, CloudFormation, IAM, App Runner, DynamoDB, RDS, Secrets Manager)
+    - GitHubActionsWebappNetworkPolicy (EC2/VPC, ELB, ECS, CloudWatch Logs, SSM, Lambda)
   Access keys are NOT created here — run bin/create-github-actions-credentials.sh
   after deploying this stack.
 
@@ -63,13 +63,13 @@ Resources:
 
   # ══════════════════════════════════════════════════════════════════════════
   # Policy 1 — GitHubActionsWebappPolicy
-  # ECR, CloudFormation, IAM, App Runner, DynamoDB
+  # ECR, CloudFormation, IAM, App Runner, DynamoDB, RDS, Secrets Manager
   # ══════════════════════════════════════════════════════════════════════════
   WebappPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: GitHubActionsWebappPolicy
-      Description: !Sub "GitHub Actions — ECR, CloudFormation, IAM, App Runner, DynamoDB for ${AppName}"
+      Description: !Sub "GitHub Actions — ECR, CloudFormation, IAM, App Runner, DynamoDB, RDS, Secrets Manager for ${AppName}"
       Users:
         - !Ref GitHubActionsUser
       PolicyDocument:
@@ -215,22 +215,78 @@ Resources:
               - dynamodb:UpdateContinuousBackups
             Resource: !Sub "arn:aws:dynamodb:${Region}:${AwsAccountId}:table/${AppName}-*"
 
+          # RDS / Aurora — cluster, instance, subnet group, parameter group, snapshots
+          - Sid: RDSManagement
+            Effect: Allow
+            Action:
+              - rds:CreateDBCluster
+              - rds:DeleteDBCluster
+              - rds:DescribeDBClusters
+              - rds:ModifyDBCluster
+              - rds:RestoreDBClusterFromSnapshot
+              - rds:CreateDBInstance
+              - rds:DeleteDBInstance
+              - rds:DescribeDBInstances
+              - rds:ModifyDBInstance
+              - rds:CreateDBSubnetGroup
+              - rds:DeleteDBSubnetGroup
+              - rds:DescribeDBSubnetGroups
+              - rds:ModifyDBSubnetGroup
+              - rds:CreateDBClusterParameterGroup
+              - rds:DeleteDBClusterParameterGroup
+              - rds:DescribeDBClusterParameterGroups
+              - rds:ModifyDBClusterParameterGroup
+              - rds:DescribeDBClusterParameters
+              - rds:AddTagsToResource
+              - rds:RemoveTagsFromResource
+              - rds:ListTagsForResource
+              - rds:CreateDBClusterSnapshot
+              - rds:DeleteDBClusterSnapshot
+              - rds:DescribeDBClusterSnapshots
+              - rds:DescribeEngineDefaultClusterParameters
+              - rds:DescribeDBEngineVersions
+              - rds:StartDBCluster
+              - rds:StopDBCluster
+            Resource: "*"
+
+          # Secrets Manager — master credentials + rotation
+          - Sid: SecretsManagerManagement
+            Effect: Allow
+            Action:
+              - secretsmanager:CreateSecret
+              - secretsmanager:DeleteSecret
+              - secretsmanager:DescribeSecret
+              - secretsmanager:GetSecretValue
+              - secretsmanager:PutSecretValue
+              - secretsmanager:UpdateSecret
+              - secretsmanager:RotateSecret
+              - secretsmanager:CancelRotateSecret
+              - secretsmanager:GetRandomPassword
+              - secretsmanager:TagResource
+              - secretsmanager:UntagResource
+              - secretsmanager:ListSecretVersionIds
+              - secretsmanager:AttachResourcePolicy
+              - secretsmanager:DeleteResourcePolicy
+              - secretsmanager:GetResourcePolicy
+            Resource: "*"
+
   # ══════════════════════════════════════════════════════════════════════════
   # Policy 2 — GitHubActionsWebappNetworkPolicy
-  # EC2/VPC, ELB, ECS, CloudWatch Logs, SSM
+  # EC2/VPC, ELB, ECS, CloudWatch Logs, SSM, Lambda
   # ══════════════════════════════════════════════════════════════════════════
   WebappNetworkPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: GitHubActionsWebappNetworkPolicy
-      Description: !Sub "GitHub Actions — EC2/VPC, ELB, ECS, Logs, SSM for ${AppName}"
+      Description: !Sub "GitHub Actions — EC2/VPC, ELB, ECS, Logs, SSM, Lambda for ${AppName}"
       Users:
         - !Ref GitHubActionsUser
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
 
-          # EC2/VPC — no resource-level support for most network actions
+          # EC2/VPC — no resource-level support for most network actions.
+          # Includes ENI actions needed by the Secrets Manager rotation Lambda.
           - Sid: EC2NetworkManagement
             Effect: Allow
             Action:
@@ -274,6 +330,10 @@ Resources:
               - ec2:DescribeTags
               - ec2:DescribeAvailabilityZones
               - ec2:DescribeAccountAttributes
+              - ec2:DescribeNetworkInterfaces
+              - ec2:CreateNetworkInterface
+              - ec2:DeleteNetworkInterface
+              - ec2:DetachNetworkInterface
             Resource: "*"
 
           # ELB — no resource-level support for most actions
@@ -343,7 +403,8 @@ Resources:
               - logs:ListTagsForResource
             Resource: "*"
 
-          # SSM — full parameter path access
+          # SSM — wildcard path to cover /webapp/env/network/*, /webapp/env/database/*,
+          # and /github-actions/* written by other stacks and scripts
           - Sid: SSMManagement
             Effect: Allow
             Action:
@@ -358,8 +419,30 @@ Resources:
               - ssm:AddTagsToResource
               - ssm:RemoveTagsFromResource
               - ssm:ListTagsForResource
-            Resource:
-              - !Sub "arn:aws:ssm:${Region}:${AwsAccountId}:parameter/*"
+            Resource: !Sub "arn:aws:ssm:${Region}:${AwsAccountId}:parameter/*"
+
+          # Lambda — required for the Secrets Manager HostedRotationLambda
+          # that CF creates and invokes automatically for Aurora password rotation
+          - Sid: LambdaManagement
+            Effect: Allow
+            Action:
+              - lambda:CreateFunction
+              - lambda:DeleteFunction
+              - lambda:GetFunction
+              - lambda:UpdateFunctionCode
+              - lambda:UpdateFunctionConfiguration
+              - lambda:InvokeFunction
+              - lambda:ListFunctions
+              - lambda:AddPermission
+              - lambda:RemovePermission
+              - lambda:GetPolicy
+              - lambda:TagResource
+              - lambda:UntagResource
+              - lambda:ListTags
+              - lambda:PutFunctionEventInvokeConfig
+              - lambda:DeleteFunctionEventInvokeConfig
+              - lambda:GetFunctionEventInvokeConfig
+            Resource: "*"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Outputs

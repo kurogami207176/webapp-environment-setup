@@ -11,10 +11,12 @@ share the same templates and are namespaced by `{AppName}-{Env}`.
 ```
 cf/
   iam-github-actions-user.yml   CloudFormation — IAM user + policies for CI/CD
+  dns-config.yml                CloudFormation — shared DNS SSM parameters (once per account)
   network.yml                   CloudFormation — VPC, subnets, SGs
   database.yml                  CloudFormation — Aurora PostgreSQL Serverless v2
   tags.json                     Shared tags applied to every stack
   params/
+    dns-config.json             Hosted zone ID + domain name
     network.staging.json        Environment-specific parameter values
     network.production.json
     database.staging.json
@@ -23,6 +25,7 @@ cf/
 bin/
   deploy-iam-github-actions-user.sh    ⚠ Manual — deploy IAM user (once per account)
   create-github-actions-credentials.sh ⚠ Manual — create access keys → GitHub secrets
+  deploy-dns-config.sh                 ⚠ Manual — publish hosted zone ID to SSM (once per account)
   deploy-network.sh                    Deploy / update the network stack
   deploy-database.sh                   Deploy / update the database stack
   sync-ssm-to-github.sh               Push AWS SSM params → GitHub secrets/variables
@@ -40,7 +43,23 @@ bin/
 
 ---
 
-## ⚠ Stack 0 — IAM GitHub Actions User (`cf/iam-github-actions-user.yml`)
+## ⚠ One-time account setup (manual, run in order)
+
+These two stacks are deployed once per AWS account — they're not part of the
+CI pipeline and don't repeat per environment.
+
+```bash
+# 1. IAM user for GitHub Actions
+./bin/deploy-iam-github-actions-user.sh
+./bin/create-github-actions-credentials.sh --github-repo your-org/your-repo
+
+# 2. DNS config — publishes hosted zone ID to SSM
+./bin/deploy-dns-config.sh
+```
+
+---
+
+## ⚠ Stack 0a — IAM GitHub Actions User (`cf/iam-github-actions-user.yml`)
 
 > **This is a one-time, manual step — do not add it to the CI pipeline.**
 > Run this once per AWS account before setting up any other pipeline.
@@ -105,6 +124,43 @@ This script will:
 ```bash
 # Run the credentials script again — it will prompt to remove the old key
 ./bin/create-github-actions-credentials.sh --github-repo your-org/your-repo
+```
+
+---
+
+## ⚠ Stack 0b — DNS Config (`cf/dns-config.yml`)
+
+Publishes two SSM parameters that application repos read when setting up
+their subdomain — no application-specific values here.
+
+| SSM Parameter | Value |
+|---------------|-------|
+| `/dns/hosted-zone-id` | `Z05430312WBT4DM6P74WI` |
+| `/dns/domain-name` | `alainjunia.com` |
+
+To add a subdomain for a new app, the app repo reads these at deploy time:
+
+```bash
+HOSTED_ZONE_ID=$(aws ssm get-parameter --name /dns/hosted-zone-id --query Parameter.Value --output text)
+DOMAIN=$(aws ssm get-parameter --name /dns/domain-name --query Parameter.Value --output text)
+# → subdomain will be: <appname>.alainjunia.com
+```
+
+The app repo is then responsible for:
+1. Requesting an ACM certificate for `<appname>.alainjunia.com` (DNS-validated against the hosted zone)
+2. Creating an App Runner custom domain attachment
+3. Writing the Route53 ALIAS record pointing to the App Runner DNS name
+
+### Deploy
+
+```bash
+./bin/deploy-dns-config.sh
+
+# To point a different domain at a different account, update cf/params/dns-config.json
+# then redeploy.
+
+# Validate only
+./bin/deploy-dns-config.sh --dry-run
 ```
 
 ---
@@ -263,15 +319,17 @@ aws secretsmanager get-secret-value \
 ## Deploying a full environment end-to-end
 
 ```bash
-# 1. IAM user — once per account, manual
+# ── Once per account (manual) ──────────────────────────────────────────────
 ./bin/deploy-iam-github-actions-user.sh
 ./bin/create-github-actions-credentials.sh --github-repo your-org/your-repo
+./bin/deploy-dns-config.sh
 
-# 2. Network (~2–3 min)
-./bin/deploy-network.sh --env staging
+# ── Per environment (via CI pipeline or manually) ──────────────────────────
+# Network (~2–3 min)
+./bin/deploy-network.sh --env production
 
-# 3. Database (~5–10 min)
-./bin/deploy-database.sh --env staging
+# Database (~5–10 min)
+./bin/deploy-database.sh --env production
 ```
 
 ---

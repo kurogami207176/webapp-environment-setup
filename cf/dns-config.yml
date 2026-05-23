@@ -1,0 +1,61 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Publishes shared DNS configuration as SSM Parameters so application repos
+  can look up the Route53 hosted zone without hard-coding IDs.
+  Deploy once per domain — not per environment.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────────────────────────────────────
+Parameters:
+  DomainName:
+    Type: String
+    Description: Root domain name (e.g. alainjunia.com).
+
+  HostedZoneId:
+    Type: String
+    Description: Route53 public hosted zone ID for the domain.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────────────
+Resources:
+
+  SsmHostedZoneId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /dns/hosted-zone-id
+      Type: String
+      Value: !Ref HostedZoneId
+      Description: !Sub "Route53 hosted zone ID for ${DomainName}"
+      Tags:
+        managed_by: cloudformation
+        git_repo: https://github.com/kurogami207176/webapp-environment-setup
+
+  SsmDomainName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /dns/domain-name
+      Type: String
+      Value: !Ref DomainName
+      Description: Root domain name — append a subdomain prefix to form app URLs.
+      Tags:
+        managed_by: cloudformation
+        git_repo: https://github.com/kurogami207176/webapp-environment-setup
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────────────────────────────────────
+Outputs:
+
+  HostedZoneId:
+    Description: Route53 hosted zone ID
+    Value: !Ref HostedZoneId
+    Export:
+      Name: DnsHostedZoneId
+
+  DomainName:
+    Description: Root domain name
+    Value: !Ref DomainName
+    Export:
+      Name: DnsDomainName
