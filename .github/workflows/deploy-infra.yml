@@ -23,10 +23,6 @@ on:
         options:
           - staging
           - production
-      app_name:
-        description: "App name (stack prefix)"
-        required: false
-        default: "webapp"
       dry_run:
         description: "Validate templates only — no deploy"
         required: false
@@ -51,7 +47,6 @@ permissions:
 # ─────────────────────────────────────────────────────────────────────────────
 env:
   TARGET_ENV: ${{ github.event_name == 'push' && 'staging' || inputs.environment }}
-  APP_NAME:   ${{ github.event_name == 'push' && 'webapp'  || inputs.app_name }}
   DRY_RUN:    ${{ github.event_name == 'push' && 'false'   || inputs.dry_run }}
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,15 +124,15 @@ jobs:
       - name: Deploy network stack
         run: |
           ./bin/deploy-network.sh \
-            --env      "${{ env.TARGET_ENV }}" \
-            --app-name "${{ env.APP_NAME }}" \
-            --region   "${{ vars.AWS_REGION }}" \
+            --env    "${{ env.TARGET_ENV }}" \
+            --region "${{ vars.AWS_REGION }}" \
             ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
 
       - name: Summary — network outputs
         if: env.DRY_RUN != 'true'
         run: |
-          STACK="${{ env.APP_NAME }}-${{ env.TARGET_ENV }}-network"
+          APP_NAME=$(python3 -c "import json; params=json.load(open('cf/params/network.${{ env.TARGET_ENV }}.json')); print(next(p['ParameterValue'] for p in params if p['ParameterKey']=='AppName'))")
+          STACK="${APP_NAME}-${{ env.TARGET_ENV }}-network"
           echo "## Network stack outputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -173,26 +168,16 @@ jobs:
 
       - name: Deploy database stack
         run: |
-          # Both environments use minimum capacity (0.5–4 ACUs).
-          # Production additionally enables deletion protection and longer backups.
-          EXTRA_FLAGS=""
-          if [[ "${{ env.TARGET_ENV }}" == "production" ]]; then
-            EXTRA_FLAGS="--backup-days 14 --deletion-protection"
-          fi
-
           ./bin/deploy-database.sh \
-            --env          "${{ env.TARGET_ENV }}" \
-            --app-name     "${{ env.APP_NAME }}" \
-            --region       "${{ vars.AWS_REGION }}" \
-            --min-capacity 0.5 \
-            --max-capacity 4 \
-            $EXTRA_FLAGS \
+            --env    "${{ env.TARGET_ENV }}" \
+            --region "${{ vars.AWS_REGION }}" \
             ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
 
       - name: Summary — database outputs
         if: env.DRY_RUN != 'true'
         run: |
-          STACK="${{ env.APP_NAME }}-${{ env.TARGET_ENV }}-database"
+          APP_NAME=$(python3 -c "import json; params=json.load(open('cf/params/database.${{ env.TARGET_ENV }}.json')); print(next(p['ParameterValue'] for p in params if p['ParameterKey']=='AppName'))")
+          STACK="${APP_NAME}-${{ env.TARGET_ENV }}-database"
           {
             echo "## Database stack outputs"
             echo ""
@@ -207,6 +192,6 @@ jobs:
             echo "### Secrets Manager paths"
             echo "| Secret | Path |"
             echo "|--------|------|"
-            echo "| Master credentials | \`/${{ env.APP_NAME }}/${{ env.TARGET_ENV }}/database/master\` |"
-            echo "| App connection     | \`/${{ env.APP_NAME }}/${{ env.TARGET_ENV }}/database/app\` |"
+            echo "| Master credentials | \`/${APP_NAME}/${{ env.TARGET_ENV }}/database/master\` |"
+            echo "| App connection     | \`/${APP_NAME}/${{ env.TARGET_ENV }}/database/app\` |"
           } >> "$GITHUB_STEP_SUMMARY"

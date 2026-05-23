@@ -1,0 +1,11 @@
+[
+  { "ParameterKey": "AppName",             "ParameterValue": "webapp"      },
+  { "ParameterKey": "Env",                 "ParameterValue": "production"  },
+  { "ParameterKey": "DatabaseName",        "ParameterValue": "appdb"       },
+  { "ParameterKey": "MasterUsername",      "ParameterValue": "dbadmin"     },
+  { "ParameterKey": "PostgresEngineVersion","ParameterValue": "16.6"       },
+  { "ParameterKey": "MinCapacity",         "ParameterValue": "0.5"         },
+  { "ParameterKey": "MaxCapacity",         "ParameterValue": "4"           },
+  { "ParameterKey": "BackupRetentionDays", "ParameterValue": "14"          },
+  { "ParameterKey": "DeletionProtection",  "ParameterValue": "true"        }
+]

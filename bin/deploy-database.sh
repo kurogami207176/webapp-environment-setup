@@ -2,35 +2,22 @@
 # bin/deploy-database.sh
 # ---------------------------------------------------------------------------
 # Deploys (or updates) the Aurora PostgreSQL Serverless v2 CloudFormation
-# stack. The network stack MUST already exist before running this.
+# stack. All environment-specific values are read from
+# cf/params/database.<env>.json. The network stack MUST already exist.
 #
 # Usage:
 #   ./bin/deploy-database.sh --env <dev|staging|production> [options]
 #
 # Options:
-#   --env              <dev|staging|production>  required
-#   --app-name         <name>                    default: webapp
-#   --region           <aws-region>              default: ap-southeast-2
-#   --db-name          <name>                    default: appdb
-#   --master-username  <name>                    default: dbadmin
-#   --min-capacity     <acus>                    default: 0.5
-#   --max-capacity     <acus>                    default: 4
-#   --backup-days      <1-35>                    default: 7
-#   --deletion-protection                        enables deletion protection
-#   --dry-run                                    validate template only
+#   --env      <dev|staging|production>  required
+#   --region   <aws-region>              default: ap-southeast-2
+#   --dry-run                            validate template only, no deploy
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
-APP_NAME="webapp"
 ENV=""
 REGION="ap-southeast-2"
-DB_NAME="appdb"
-MASTER_USERNAME="dbadmin"
-MIN_CAPACITY="0.5"
-MAX_CAPACITY="4"
-BACKUP_DAYS="7"
-DELETION_PROTECTION="false"
 DRY_RUN=false
 
 CF_DIR="$(cd "$(dirname "$0")/../cf" && pwd)"
@@ -39,23 +26,16 @@ TEMPLATE="${CF_DIR}/database.yml"
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --env)                  ENV="$2";              shift 2 ;;
-    --app-name)             APP_NAME="$2";         shift 2 ;;
-    --region)               REGION="$2";           shift 2 ;;
-    --db-name)              DB_NAME="$2";          shift 2 ;;
-    --master-username)      MASTER_USERNAME="$2";  shift 2 ;;
-    --min-capacity)         MIN_CAPACITY="$2";     shift 2 ;;
-    --max-capacity)         MAX_CAPACITY="$2";     shift 2 ;;
-    --backup-days)          BACKUP_DAYS="$2";      shift 2 ;;
-    --deletion-protection)  DELETION_PROTECTION="true"; shift ;;
-    --dry-run)              DRY_RUN=true;          shift   ;;
+    --env)     ENV="$2";     shift 2 ;;
+    --region)  REGION="$2";  shift 2 ;;
+    --dry-run) DRY_RUN=true; shift   ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
 # ── Validation ────────────────────────────────────────────────────────────────
 if [[ -z "${ENV}" ]]; then
-  echo "Usage: $0 --env <dev|staging|production> [--app-name <name>] [--region <region>] [--dry-run]" >&2
+  echo "Usage: $0 --env <dev|staging|production> [--region <region>] [--dry-run]" >&2
   exit 1
 fi
 
@@ -68,6 +48,23 @@ if ! command -v aws &>/dev/null; then
   echo "❌  aws CLI not found. Install: brew install awscli" >&2
   exit 1
 fi
+
+# ── Resolve parameter file ────────────────────────────────────────────────────
+PARAM_FILE="${CF_DIR}/params/database.${ENV}.json"
+if [[ ! -f "${PARAM_FILE}" ]]; then
+  echo "❌  Parameter file not found: ${PARAM_FILE}" >&2
+  exit 1
+fi
+
+# Read AppName out of the param file
+APP_NAME=$(python3 -c "
+import json, sys
+params = json.load(open('${PARAM_FILE}'))
+match = next((p['ParameterValue'] for p in params if p['ParameterKey'] == 'AppName'), None)
+if not match:
+    sys.exit('AppName not found in ${PARAM_FILE}')
+print(match)
+")
 
 NETWORK_STACK="${APP_NAME}-${ENV}-network"
 STACK_NAME="${APP_NAME}-${ENV}-database"
@@ -84,7 +81,7 @@ check_network_stack() {
 
   if [[ "${status}" == "DOES_NOT_EXIST" ]]; then
     echo "❌  Network stack '${NETWORK_STACK}' does not exist." >&2
-    echo "    Run first: ./bin/deploy-network.sh --env ${ENV} --app-name ${APP_NAME}" >&2
+    echo "    Run first: ./bin/deploy-network.sh --env ${ENV}" >&2
     exit 1
   fi
 
@@ -99,16 +96,10 @@ check_network_stack() {
 # ── Header ────────────────────────────────────────────────────────────────────
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " Database Stack Deploy"
-echo "  App:          ${APP_NAME}"
-echo "  Env:          ${ENV}"
-echo "  Stack:        ${STACK_NAME}"
-echo "  Region:       ${REGION}"
-echo "  DB Name:      ${DB_NAME}"
-echo "  Master User:  ${MASTER_USERNAME}"
-echo "  Capacity:     ${MIN_CAPACITY}–${MAX_CAPACITY} ACUs"
-echo "  Backup Days:  ${BACKUP_DAYS}"
-echo "  Del. Protect: ${DELETION_PROTECTION}"
-[[ "${DRY_RUN}" == "true" ]] && echo "  Mode:         DRY RUN (validate only)"
+echo "  Stack:  ${STACK_NAME}"
+echo "  Region: ${REGION}"
+echo "  Params: cf/params/database.${ENV}.json"
+[[ "${DRY_RUN}" == "true" ]] && echo "  Mode:   DRY RUN (validate only)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── Template validation ───────────────────────────────────────────────────────
@@ -137,15 +128,7 @@ echo ""
 aws cloudformation deploy \
   --template-file "${TEMPLATE}" \
   --stack-name "${STACK_NAME}" \
-  --parameter-overrides \
-      "AppName=${APP_NAME}" \
-      "Env=${ENV}" \
-      "DatabaseName=${DB_NAME}" \
-      "MasterUsername=${MASTER_USERNAME}" \
-      "MinCapacity=${MIN_CAPACITY}" \
-      "MaxCapacity=${MAX_CAPACITY}" \
-      "BackupRetentionDays=${BACKUP_DAYS}" \
-      "DeletionProtection=${DELETION_PROTECTION}" \
+  --parameter-overrides "file://${PARAM_FILE}" \
   --region "${REGION}" \
   --no-fail-on-empty-changeset
 
@@ -158,45 +141,12 @@ aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
   --output table
 
-# ── Show Secrets Manager paths ────────────────────────────────────────────────
 echo ""
 echo "▶ Secrets Manager entries:"
+echo "  Master credentials : /${APP_NAME}/${ENV}/database/master"
+echo "  App connection     : /${APP_NAME}/${ENV}/database/app"
 echo ""
-echo "  Master credentials (with auto-rotation):"
-echo "    /${APP_NAME}/${ENV}/database/master"
-echo ""
-echo "  App connection details:"
-echo "    /${APP_NAME}/${ENV}/database/app"
-echo ""
-echo "▶ SSM Parameters (non-sensitive, for scripts/CI):"
-echo ""
-echo "    /${APP_NAME}/${ENV}/database/endpoint"
-echo "    /${APP_NAME}/${ENV}/database/port"
-echo "    /${APP_NAME}/${ENV}/database/name"
-echo "    /${APP_NAME}/${ENV}/database/master-secret-arn"
-echo "    /${APP_NAME}/${ENV}/database/app-secret-arn"
-
-# ── Fetch and display the endpoint ────────────────────────────────────────────
-echo ""
-echo "▶ Connection info:"
-ENDPOINT=$(aws ssm get-parameter \
-  --name "/${APP_NAME}/${ENV}/database/endpoint" \
-  --region "${REGION}" \
-  --query 'Parameter.Value' \
-  --output text 2>/dev/null || echo "(not yet available)")
-PORT=$(aws ssm get-parameter \
-  --name "/${APP_NAME}/${ENV}/database/port" \
-  --region "${REGION}" \
-  --query 'Parameter.Value' \
-  --output text 2>/dev/null || echo "5432")
-
-echo ""
-echo "  Host:     ${ENDPOINT}"
-echo "  Port:     ${PORT}"
-echo "  Database: ${DB_NAME}"
-echo "  User:     ${MASTER_USERNAME}"
-echo "  Password: (stored in Secrets Manager — fetch with command below)"
-echo ""
+echo "▶ Fetch credentials:"
 echo "  aws secretsmanager get-secret-value \\"
 echo "    --secret-id /${APP_NAME}/${ENV}/database/master \\"
 echo "    --region ${REGION} \\"

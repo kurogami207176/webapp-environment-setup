@@ -2,24 +2,21 @@
 # bin/deploy-network.sh
 # ---------------------------------------------------------------------------
 # Deploys (or updates) the network CloudFormation stack.
+# All environment-specific values are read from cf/params/network.<env>.json.
 #
 # Usage:
 #   ./bin/deploy-network.sh --env <dev|staging|production> [options]
 #
 # Options:
-#   --env          <dev|staging|production>   required
-#   --app-name     <name>                     default: webapp
-#   --region       <aws-region>               default: ap-southeast-2
-#   --vpc-cidr     <cidr>                     default: 10.0.0.0/16
-#   --dry-run                                 validate template only, no deploy
+#   --env       <dev|staging|production>  required
+#   --region    <aws-region>              default: ap-southeast-2
+#   --dry-run                             validate template only, no deploy
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
-APP_NAME="webapp"
 ENV=""
 REGION="ap-southeast-2"
-VPC_CIDR="10.0.0.0/16"
 DRY_RUN=false
 
 CF_DIR="$(cd "$(dirname "$0")/../cf" && pwd)"
@@ -28,18 +25,16 @@ TEMPLATE="${CF_DIR}/network.yml"
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --env)       ENV="$2";       shift 2 ;;
-    --app-name)  APP_NAME="$2";  shift 2 ;;
-    --region)    REGION="$2";    shift 2 ;;
-    --vpc-cidr)  VPC_CIDR="$2";  shift 2 ;;
-    --dry-run)   DRY_RUN=true;   shift   ;;
+    --env)     ENV="$2";    shift 2 ;;
+    --region)  REGION="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=true; shift  ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
 
 # ── Validation ────────────────────────────────────────────────────────────────
 if [[ -z "${ENV}" ]]; then
-  echo "Usage: $0 --env <dev|staging|production> [--app-name <name>] [--region <region>] [--dry-run]" >&2
+  echo "Usage: $0 --env <dev|staging|production> [--region <region>] [--dry-run]" >&2
   exit 1
 fi
 
@@ -53,15 +48,31 @@ if ! command -v aws &>/dev/null; then
   exit 1
 fi
 
+# ── Resolve parameter file ────────────────────────────────────────────────────
+PARAM_FILE="${CF_DIR}/params/network.${ENV}.json"
+if [[ ! -f "${PARAM_FILE}" ]]; then
+  echo "❌  Parameter file not found: ${PARAM_FILE}" >&2
+  exit 1
+fi
+
+# Read AppName out of the param file (avoids duplicating it as a script arg)
+APP_NAME=$(python3 -c "
+import json, sys
+params = json.load(open('${PARAM_FILE}'))
+match = next((p['ParameterValue'] for p in params if p['ParameterKey'] == 'AppName'), None)
+if not match:
+    sys.exit('AppName not found in ${PARAM_FILE}')
+print(match)
+")
+
 STACK_NAME="${APP_NAME}-${ENV}-network"
 
 # ── Header ────────────────────────────────────────────────────────────────────
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " Network Stack Deploy"
-echo "  App:    ${APP_NAME}"
-echo "  Env:    ${ENV}"
 echo "  Stack:  ${STACK_NAME}"
 echo "  Region: ${REGION}"
+echo "  Params: cf/params/network.${ENV}.json"
 [[ "${DRY_RUN}" == "true" ]] && echo "  Mode:   DRY RUN (validate only)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -89,10 +100,7 @@ echo ""
 aws cloudformation deploy \
   --template-file "${TEMPLATE}" \
   --stack-name "${STACK_NAME}" \
-  --parameter-overrides \
-      "AppName=${APP_NAME}" \
-      "Env=${ENV}" \
-      "VpcCidr=${VPC_CIDR}" \
+  --parameter-overrides "file://${PARAM_FILE}" \
   --region "${REGION}" \
   --no-fail-on-empty-changeset
 
@@ -110,5 +118,5 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " ✅  Network stack ready: ${STACK_NAME}"
 echo ""
 echo " Next step:"
-echo "   ./bin/deploy-database.sh --env ${ENV} --app-name ${APP_NAME}"
+echo "   ./bin/deploy-database.sh --env ${ENV}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
