@@ -180,6 +180,21 @@ Resources:
               - !Sub "arn:aws:iam::${AwsAccountId}:role/${AppName}-*"
               - !Sub "arn:aws:iam::${AwsAccountId}:oidc-provider/token.actions.githubusercontent.com"
 
+          # IAM — service-linked roles for AWS services (RDS, ECS, ELB, App Runner).
+          # Scoped by AWSServiceName condition so it can't create arbitrary roles.
+          - Sid: IAMServiceLinkedRoles
+            Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+            Resource: !Sub "arn:aws:iam::${AwsAccountId}:role/aws-service-role/*"
+            Condition:
+              StringLike:
+                "iam:AWSServiceName":
+                  - rds.amazonaws.com
+                  - ecs.amazonaws.com
+                  - elasticloadbalancing.amazonaws.com
+                  - apprunner.amazonaws.com
+
           # App Runner — no resource-level ARN filtering supported
           - Sid: AppRunnerManagement
             Effect: Allow
