@@ -22,6 +22,7 @@ DRY_RUN=false
 
 CF_DIR="$(cd "$(dirname "$0")/../cf" && pwd)"
 TEMPLATE="${CF_DIR}/database.yml"
+TAGS_FILE="${CF_DIR}/tags.json"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -55,6 +56,18 @@ if [[ ! -f "${PARAM_FILE}" ]]; then
   echo "❌  Parameter file not found: ${PARAM_FILE}" >&2
   exit 1
 fi
+
+if [[ ! -f "${TAGS_FILE}" ]]; then
+  echo "❌  Tags file not found: ${TAGS_FILE}" >&2
+  exit 1
+fi
+
+# Convert tags.json [ {"Key":...,"Value":...} ] → "Key=Value Key=Value ..." for --tags
+TAGS_ARGS=$(python3 -c "
+import json
+tags = json.load(open('${TAGS_FILE}'))
+print(' '.join(f\"{t['Key']}={t['Value']}\" for t in tags))
+")
 
 # Read AppName out of the param file
 APP_NAME=$(python3 -c "
@@ -99,6 +112,7 @@ echo " Database Stack Deploy"
 echo "  Stack:  ${STACK_NAME}"
 echo "  Region: ${REGION}"
 echo "  Params: cf/params/database.${ENV}.json"
+echo "  Tags:   cf/tags.json"
 [[ "${DRY_RUN}" == "true" ]] && echo "  Mode:   DRY RUN (validate only)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -129,6 +143,7 @@ aws cloudformation deploy \
   --template-file "${TEMPLATE}" \
   --stack-name "${STACK_NAME}" \
   --parameter-overrides "file://${PARAM_FILE}" \
+  --tags ${TAGS_ARGS} \
   --region "${REGION}" \
   --no-fail-on-empty-changeset
 
