@@ -1,0 +1,392 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Aurora PostgreSQL Serverless v2 (writer-only) cluster.
+  Imports network outputs from the network stack.
+  Stores all connection details in AWS Secrets Manager so applications
+  can fetch them at runtime without hard-coding credentials.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────────────────────────────────────
+Parameters:
+  AppName:
+    Type: String
+    Default: webapp
+    Description: Must match the AppName used when deploying the network stack.
+
+  Env:
+    Type: String
+    AllowedValues: [dev, staging, production]
+    Description: Deployment environment — must match network stack.
+
+  DatabaseName:
+    Type: String
+    Default: appdb
+    Description: Name of the initial database to create inside the cluster.
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9_]*"
+    ConstraintDescription: Must begin with a letter and contain only alphanumeric characters or underscores.
+
+  MasterUsername:
+    Type: String
+    Default: dbadmin
+    Description: Master username for the Aurora cluster.
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9_]*"
+    NoEcho: false
+
+  # Aurora Serverless v2 capacity bounds
+  MinCapacity:
+    Type: Number
+    Default: 0.5
+    Description: Minimum Aurora Capacity Units (ACUs). 0.5 = lowest cost.
+    MinValue: 0.5
+    MaxValue: 128
+
+  MaxCapacity:
+    Type: Number
+    Default: 4
+    Description: Maximum Aurora Capacity Units (ACUs).
+    MinValue: 1
+    MaxValue: 128
+
+  PostgresEngineVersion:
+    Type: String
+    Default: "16.6"
+    Description: Aurora-compatible PostgreSQL version.
+    AllowedValues:
+      - "16.6"
+      - "15.10"
+      - "14.15"
+
+  # Backup
+  BackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+    Description: Number of days to retain automated backups.
+
+  # Deletion protection — recommended ON for production
+  DeletionProtection:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set to true for production to prevent accidental deletion.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Conditions
+# ─────────────────────────────────────────────────────────────────────────────
+Conditions:
+  IsProduction: !Equals [!Ref Env, "production"]
+  EnableDeletionProtection: !Equals [!Ref DeletionProtection, "true"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Metadata — console grouping
+# ─────────────────────────────────────────────────────────────────────────────
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: "Identity"}
+        Parameters: [AppName, Env]
+      - Label: {default: "Database"}
+        Parameters: [DatabaseName, MasterUsername, PostgresEngineVersion]
+      - Label: {default: "Serverless v2 Capacity"}
+        Parameters: [MinCapacity, MaxCapacity]
+      - Label: {default: "Operations"}
+        Parameters: [BackupRetentionDays, DeletionProtection]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────────────
+Resources:
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Secrets Manager — master credentials
+  # Aurora will generate the password; the secret stores username + password
+  # together in the standard RDS JSON format so the rotation Lambda and
+  # application SDKs can parse it out-of-the-box.
+  # ══════════════════════════════════════════════════════════════════════════
+  DbMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/database/master"
+      Description: !Sub "Aurora master credentials for ${AppName}-${Env}"
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${MasterUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\\'
+        ExcludePunctuation: false
+      Tags:
+        - Key: AppName
+          Value: !Ref AppName
+        - Key: Env
+          Value: !Ref Env
+        - Key: StackType
+          Value: database
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Secrets Manager — application connection details secret
+  # This is the secret your applications should reference. It includes all
+  # fields needed to build a connection string. The cluster endpoint and
+  # database name are injected after the cluster is created via a
+  # CloudFormation custom resource pattern — here we store the non-dynamic
+  # fields now and the endpoint gets populated by the RDS secret attachment.
+  # ══════════════════════════════════════════════════════════════════════════
+  DbAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/database/app"
+      Description: !Sub "Application DB connection details for ${AppName}-${Env}"
+      SecretString: !Sub |
+        {
+          "engine":   "postgres",
+          "dbname":   "${DatabaseName}",
+          "username": "${MasterUsername}",
+          "port":     "5432"
+        }
+      Tags:
+        - Key: AppName
+          Value: !Ref AppName
+        - Key: Env
+          Value: !Ref Env
+        - Key: StackType
+          Value: database
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # DB Subnet Group  (spans both isolated subnets)
+  # ══════════════════════════════════════════════════════════════════════════
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "Aurora isolated subnets for ${AppName}-${Env}"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${AppName}-${Env}-IsolatedSubnet1Id"
+        - Fn::ImportValue: !Sub "${AppName}-${Env}-IsolatedSubnet2Id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-${Env}-db-subnet-group"
+        - Key: Env
+          Value: !Ref Env
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Aurora Cluster Parameter Group
+  # ══════════════════════════════════════════════════════════════════════════
+  DbClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: !Sub "Aurora PostgreSQL cluster params for ${AppName}-${Env}"
+      Family: !Sub "aurora-postgresql${PostgresEngineVersion}"
+      Parameters:
+        # Force SSL connections from all clients
+        rds.force_ssl: "1"
+        # Use UTC so timestamps are unambiguous across services
+        timezone: "UTC"
+        # Log slow queries (useful for all environments)
+        log_min_duration_statement: "1000"   # ms — log queries taking > 1 s
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-${Env}-db-cluster-pg"
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Aurora Serverless v2 Cluster
+  # ══════════════════════════════════════════════════════════════════════════
+  DbCluster:
+    Type: AWS::RDS::DBCluster
+    DependsOn: DbMasterSecret
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBClusterIdentifier: !Sub "${AppName}-${Env}-aurora-cluster"
+      Engine: aurora-postgresql
+      EngineVersion: !Ref PostgresEngineVersion
+      EngineMode: provisioned        # Required for Serverless v2
+
+      DatabaseName: !Ref DatabaseName
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DbMasterSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbMasterSecret}:SecretString:password}}"
+
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      DBClusterParameterGroupName: !Ref DbClusterParameterGroup
+      VpcSecurityGroupIds:
+        - Fn::ImportValue: !Sub "${AppName}-${Env}-DatabaseSecurityGroupId"
+
+      # Serverless v2 capacity configuration
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref MinCapacity
+        MaxCapacity: !Ref MaxCapacity
+
+      BackupRetentionPeriod: !Ref BackupRetentionDays
+      PreferredBackupWindow: "16:00-17:00"          # 02:00–03:00 AEST
+      PreferredMaintenanceWindow: "sun:17:00-sun:18:00"  # Sunday 03:00 AEST
+
+      StorageEncrypted: true
+      DeletionProtection: !If [EnableDeletionProtection, true, false]
+
+      # Enable CloudWatch log exports
+      EnableCloudwatchLogsExports:
+        - postgresql
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-${Env}-aurora-cluster"
+        - Key: Env
+          Value: !Ref Env
+        - Key: AppName
+          Value: !Ref AppName
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Aurora Serverless v2 Writer Instance
+  # db.serverless is the instance class that enables Serverless v2 behaviour
+  # ══════════════════════════════════════════════════════════════════════════
+  DbWriterInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "${AppName}-${Env}-aurora-writer"
+      DBClusterIdentifier: !Ref DbCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-${Env}-aurora-writer"
+        - Key: Env
+          Value: !Ref Env
+        - Key: AppName
+          Value: !Ref AppName
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Attach the master secret to the cluster so AWS can manage rotation
+  # This also enriches the secret with host/port/dbname fields.
+  # ══════════════════════════════════════════════════════════════════════════
+  DbSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DbMasterSecret
+      TargetId: !Ref DbCluster
+      TargetType: AWS::RDS::DBCluster
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Secrets Manager Rotation
+  # Uses the AWS-managed SingleUser rotation Lambda.
+  # Rotates the master password every 30 days.
+  # ══════════════════════════════════════════════════════════════════════════
+  DbSecretRotation:
+    Type: AWS::SecretsManager::RotationSchedule
+    DependsOn: DbSecretAttachment
+    Properties:
+      SecretId: !Ref DbMasterSecret
+      HostedRotationLambda:
+        RotationType: PostgreSQLSingleUser
+        RotationLambdaName: !Sub "${AppName}-${Env}-db-secret-rotation"
+        VpcSecurityGroupIds:
+          Fn::ImportValue: !Sub "${AppName}-${Env}-DatabaseSecurityGroupId"
+        VpcSubnetIds:
+          Fn::ImportValue: !Sub "${AppName}-${Env}-IsolatedSubnetIds"
+      RotationRules:
+        AutomaticallyAfterDays: 30
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # SSM Parameters — handy for scripts / CI that need non-sensitive values
+  # (secret ARNs are safe to store as plain SSM strings)
+  # ══════════════════════════════════════════════════════════════════════════
+  SsmDbEndpoint:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/database/endpoint"
+      Type: String
+      Value: !GetAtt DbCluster.Endpoint.Address
+      Description: !Sub "Aurora cluster writer endpoint for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmDbPort:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/database/port"
+      Type: String
+      Value: !GetAtt DbCluster.Endpoint.Port
+      Description: !Sub "Aurora cluster port for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmDbName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/database/name"
+      Type: String
+      Value: !Ref DatabaseName
+      Description: !Sub "Database name for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmMasterSecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/database/master-secret-arn"
+      Type: String
+      Value: !Ref DbMasterSecret
+      Description: !Sub "ARN of the master credentials secret for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+  SsmAppSecretArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Env}/database/app-secret-arn"
+      Type: String
+      Value: !Ref DbAppSecret
+      Description: !Sub "ARN of the app connection secret for ${AppName}-${Env}"
+      Tags:
+        AppName: !Ref AppName
+        Env: !Ref Env
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────────────────────────────────────
+Outputs:
+
+  ClusterIdentifier:
+    Description: Aurora cluster identifier
+    Value: !Ref DbCluster
+    Export:
+      Name: !Sub "${AppName}-${Env}-DbClusterIdentifier"
+
+  ClusterEndpoint:
+    Description: Writer endpoint hostname
+    Value: !GetAtt DbCluster.Endpoint.Address
+    Export:
+      Name: !Sub "${AppName}-${Env}-DbClusterEndpoint"
+
+  ClusterPort:
+    Description: Writer endpoint port
+    Value: !GetAtt DbCluster.Endpoint.Port
+    Export:
+      Name: !Sub "${AppName}-${Env}-DbClusterPort"
+
+  DatabaseName:
+    Description: Initial database name
+    Value: !Ref DatabaseName
+    Export:
+      Name: !Sub "${AppName}-${Env}-DbName"
+
+  MasterSecretArn:
+    Description: >
+      ARN of the Secrets Manager secret containing master credentials.
+      Retrieve in code with: aws secretsmanager get-secret-value --secret-id <arn>
+    Value: !Ref DbMasterSecret
+    Export:
+      Name: !Sub "${AppName}-${Env}-DbMasterSecretArn"
+
+  AppSecretArn:
+    Description: >
+      ARN of the Secrets Manager secret containing app connection details.
+      Retrieve in code with: aws secretsmanager get-secret-value --secret-id <arn>
+    Value: !Ref DbAppSecret
+    Export:
+      Name: !Sub "${AppName}-${Env}-DbAppSecretArn"

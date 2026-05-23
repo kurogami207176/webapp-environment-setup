@@ -1,0 +1,68 @@
+name: Validate PR
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runs on every pull request that touches infrastructure files.
+# No AWS credentials required — lint only.
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  pull_request:
+    paths:
+      - "cf/**"
+      - "bin/deploy-*.sh"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+  pull-requests: write   # allows posting a summary comment on the PR
+
+jobs:
+  lint:
+    name: Lint CloudFormation templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint --quiet
+
+      - name: Lint network.yml
+        id: lint_network
+        run: |
+          cfn_lint cf/network.yml 2>&1 | tee /tmp/lint-network.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Lint database.yml
+        id: lint_database
+        run: |
+          cfn_lint cf/database.yml 2>&1 | tee /tmp/lint-database.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate shell scripts (bash -n syntax check)
+        run: |
+          for script in bin/deploy-network.sh bin/deploy-database.sh bin/sync-ssm-to-github.sh; do
+            bash -n "$script" && echo "✓ $script" || (echo "✗ $script has syntax errors" && exit 1)
+          done
+
+      - name: Post PR summary
+        if: always()
+        run: |
+          {
+            echo "## Infrastructure validation"
+            echo ""
+            echo "| File | Result |"
+            echo "|------|--------|"
+            network_rc=${{ steps.lint_network.outputs.exit_code || '0' }}
+            db_rc=${{ steps.lint_database.outputs.exit_code || '0' }}
+            [[ "$network_rc" == "0" ]] && net_icon="✅" || net_icon="❌"
+            [[ "$db_rc" == "0" ]]      && db_icon="✅"  || db_icon="❌"
+            echo "| \`cf/network.yml\`  | ${net_icon} |"
+            echo "| \`cf/database.yml\` | ${db_icon} |"
+            if [[ "$network_rc" != "0" || "$db_rc" != "0" ]]; then
+              echo ""
+              echo "### Lint errors"
+              echo '```'
+              cat /tmp/lint-network.txt /tmp/lint-database.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,218 @@
+name: Deploy Infrastructure
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers
+#   push to main  → staging (automatic)
+#   workflow_dispatch → production (manual, requires environment approval)
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "cf/**"
+      - "bin/deploy-*.sh"
+      - ".github/workflows/deploy-infra.yml"
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      app_name:
+        description: "App name (stack prefix)"
+        required: false
+        default: "webapp"
+      max_db_capacity:
+        description: "Aurora max ACUs (production default: 16)"
+        required: false
+        default: "16"
+      dry_run:
+        description: "Validate templates only — no deploy"
+        required: false
+        type: boolean
+        default: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Concurrency — one deploy per environment at a time
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: infra-${{ github.event_name == 'push' && 'staging' || inputs.environment }}
+  cancel-in-progress: false   # never cancel an in-flight deploy
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Permissions — read repo contents only; AWS auth via static credentials
+# ─────────────────────────────────────────────────────────────────────────────
+permissions:
+  contents: read
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Top-level env — derived from trigger type so all jobs share the same value
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  TARGET_ENV: ${{ github.event_name == 'push' && 'staging' || inputs.environment }}
+  APP_NAME:   ${{ github.event_name == 'push' && 'webapp'  || inputs.app_name }}
+  DRY_RUN:    ${{ github.event_name == 'push' && 'false'   || inputs.dry_run }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Jobs
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 1. Validate  — always runs, no AWS credentials needed
+  # ════════════════════════════════════════════════════════════════════════════
+  validate:
+    name: Validate templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint CloudFormation templates (cfn-lint)
+        run: |
+          pip install cfn-lint --quiet
+          cfn_lint cf/network.yml
+          cfn_lint cf/database.yml
+          echo "✓ Both templates pass cfn-lint"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 2. Gate — production deployments require manual approval.
+  #    Create a GitHub Environment named "production" with required reviewers
+  #    to make this gate effective. Staging skips this job entirely.
+  # ════════════════════════════════════════════════════════════════════════════
+  approve-production:
+    name: Await production approval
+    needs: validate
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+    environment:
+      name: production          # ← configure required reviewers in repo Settings
+    steps:
+      - name: Approved
+        run: echo "Production deployment approved — proceeding."
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 3. Deploy network stack
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy-network:
+    name: "Deploy network (${{ github.event_name == 'push' && 'staging' || inputs.environment }})"
+    needs:
+      - validate
+      - approve-production
+    # approve-production is skipped for staging — always-run after validate
+    if: always() && needs.validate.result == 'success' && (needs.approve-production.result == 'success' || needs.approve-production.result == 'skipped')
+    runs-on: ubuntu-latest
+
+    # Use the GitHub Environment for scoped secrets if targeting production
+    environment:
+      name: ${{ github.event_name == 'push' && 'staging' || inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ vars.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+          echo "Account: ${{ secrets.AWS_ACCOUNT_ID }}"
+          echo "Region:  ${{ vars.AWS_REGION }}"
+
+      - name: Deploy network stack
+        run: |
+          ./bin/deploy-network.sh \
+            --env      "${{ env.TARGET_ENV }}" \
+            --app-name "${{ env.APP_NAME }}" \
+            --region   "${{ vars.AWS_REGION }}" \
+            ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
+
+      - name: Summary — network outputs
+        if: env.DRY_RUN != 'true'
+        run: |
+          STACK="${{ env.APP_NAME }}-${{ env.TARGET_ENV }}-network"
+          echo "## Network stack outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          aws cloudformation describe-stacks \
+            --stack-name "${STACK}" \
+            --region "${{ vars.AWS_REGION }}" \
+            --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
+            --output table >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 4. Deploy database stack  (runs after network is confirmed healthy)
+  # ════════════════════════════════════════════════════════════════════════════
+  deploy-database:
+    name: "Deploy database (${{ github.event_name == 'push' && 'staging' || inputs.environment }})"
+    needs: deploy-network
+    if: needs.deploy-network.result == 'success'
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ github.event_name == 'push' && 'staging' || inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ vars.AWS_REGION }}
+
+      - name: Deploy database stack
+        run: |
+          # Production gets higher capacity, deletion protection, longer backups
+          if [[ "${{ env.TARGET_ENV }}" == "production" ]]; then
+            ./bin/deploy-database.sh \
+              --env                 "${{ env.TARGET_ENV }}" \
+              --app-name            "${{ env.APP_NAME }}" \
+              --region              "${{ vars.AWS_REGION }}" \
+              --max-capacity        "${{ inputs.max_db_capacity || '16' }}" \
+              --backup-days         14 \
+              --deletion-protection \
+              ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
+          else
+            ./bin/deploy-database.sh \
+              --env      "${{ env.TARGET_ENV }}" \
+              --app-name "${{ env.APP_NAME }}" \
+              --region   "${{ vars.AWS_REGION }}" \
+              ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }}
+          fi
+
+      - name: Summary — database outputs
+        if: env.DRY_RUN != 'true'
+        run: |
+          STACK="${{ env.APP_NAME }}-${{ env.TARGET_ENV }}-database"
+          {
+            echo "## Database stack outputs"
+            echo ""
+            echo '```'
+            aws cloudformation describe-stacks \
+              --stack-name "${STACK}" \
+              --region "${{ vars.AWS_REGION }}" \
+              --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
+              --output table
+            echo '```'
+            echo ""
+            echo "### Secrets Manager paths"
+            echo "| Secret | Path |"
+            echo "|--------|------|"
+            echo "| Master credentials | \`/${{ env.APP_NAME }}/${{ env.TARGET_ENV }}/database/master\` |"
+            echo "| App connection     | \`/${{ env.APP_NAME }}/${{ env.TARGET_ENV }}/database/app\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
