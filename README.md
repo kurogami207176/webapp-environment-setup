@@ -10,13 +10,22 @@ share the same templates and are namespaced by `{AppName}-{Env}`.
 
 ```
 cf/
-  network.yml        CloudFormation — VPC, subnets, SGs
-  database.yml       CloudFormation — Aurora PostgreSQL Serverless v2
+  iam-github-actions-user.yml   CloudFormation — IAM user + policies for CI/CD
+  network.yml                   CloudFormation — VPC, subnets, SGs
+  database.yml                  CloudFormation — Aurora PostgreSQL Serverless v2
+  tags.json                     Shared tags applied to every stack
+  params/
+    network.staging.json        Environment-specific parameter values
+    network.production.json
+    database.staging.json
+    database.production.json
 
 bin/
-  deploy-network.sh  Deploy / update the network stack
-  deploy-database.sh Deploy / update the database stack
-  sync-ssm-to-github.sh  Push AWS SSM params → GitHub secrets/variables
+  deploy-iam-github-actions-user.sh    ⚠ Manual — deploy IAM user (once per account)
+  create-github-actions-credentials.sh ⚠ Manual — create access keys → GitHub secrets
+  deploy-network.sh                    Deploy / update the network stack
+  deploy-database.sh                   Deploy / update the database stack
+  sync-ssm-to-github.sh               Push AWS SSM params → GitHub secrets/variables
 ```
 
 ---
@@ -27,7 +36,76 @@ bin/
 |------|---------|
 | AWS CLI v2 | `brew install awscli` |
 | Authenticated AWS session | `aws configure` or assume a role |
-| `gh` CLI (for SSM→GitHub sync) | `brew install gh && gh auth login` |
+| `gh` CLI | `brew install gh && gh auth login` |
+
+---
+
+## ⚠ Stack 0 — IAM GitHub Actions User (`cf/iam-github-actions-user.yml`)
+
+> **This is a one-time, manual step — do not add it to the CI pipeline.**
+> Run this once per AWS account before setting up any other pipeline.
+
+### What it creates
+
+| Resource | Detail |
+|----------|--------|
+| IAM User | `github-actions-webapp` |
+| `GitHubActionsWebappPolicy` | ECR (`webapp-*` repos), CloudFormation (`webapp-*` stacks), IAM (`webapp-*` roles + OIDC provider), App Runner, DynamoDB (`webapp-*` tables) |
+| `GitHubActionsWebappNetworkPolicy` | EC2/VPC, ELB, ECS, CloudWatch Logs, SSM parameters |
+
+All policies are least-privilege — resource ARNs are scoped to `webapp-*`
+wherever AWS supports resource-level permissions.
+
+### Step 1 — Deploy the IAM user
+
+```bash
+./bin/deploy-iam-github-actions-user.sh
+
+# Override defaults if needed
+./bin/deploy-iam-github-actions-user.sh \
+  --app-name webapp \
+  --region   ap-southeast-2 \
+  --username github-actions-webapp
+
+# Validate only
+./bin/deploy-iam-github-actions-user.sh --dry-run
+```
+
+### Step 2 — Create access keys and push to GitHub
+
+```bash
+./bin/create-github-actions-credentials.sh --github-repo your-org/your-repo
+
+# Push into a specific GitHub Environment instead of repo-level
+./bin/create-github-actions-credentials.sh \
+  --github-repo your-org/your-repo \
+  --github-env  production
+```
+
+This script will:
+1. Check how many access keys the user already has (AWS limit: 2)
+2. Prompt to delete the oldest key if at limit
+3. Create a new access key
+4. Push the following directly to GitHub:
+
+| GitHub destination | Value | Type |
+|--------------------|-------|------|
+| `AWS_ACCESS_KEY_ID` | New key ID | Secret |
+| `AWS_SECRET_ACCESS_KEY` | New secret | Secret |
+| `AWS_ACCOUNT_ID` | Current account ID | Secret |
+| `AWS_REGION` | Region | Variable |
+
+5. Store the key ID (not the secret) in SSM at `/github-actions/access-key-id` for audit/rotation tracking
+
+> **⚠ The secret access key is never stored anywhere after this script runs.**
+> If it is lost, delete the key and run the script again.
+
+### Rotating credentials
+
+```bash
+# Run the credentials script again — it will prompt to remove the old key
+./bin/create-github-actions-credentials.sh --github-repo your-org/your-repo
+```
 
 ---
 
@@ -46,23 +124,34 @@ bin/
 | Route tables | Public → IGW · Private → NAT GW · Isolated → local only |
 | Security Groups | `alb-sg` · `app-sg` · `db-sg` |
 
-All subnet IDs, VPC ID, and Security Group IDs are **exported** so the
-database stack (and future app stacks) can import them by name.
+All subnet IDs, VPC ID, and Security Group IDs are exported as both
+**CloudFormation exports** (for stacks in the same account) and
+**SSM Parameters** (for other repos / pipelines):
+
+```
+/{AppName}/{Env}/network/vpc-id
+/{AppName}/{Env}/network/vpc-cidr
+/{AppName}/{Env}/network/public-subnet-ids
+/{AppName}/{Env}/network/private-subnet-ids
+/{AppName}/{Env}/network/isolated-subnet-ids
+/{AppName}/{Env}/network/alb-sg-id
+/{AppName}/{Env}/network/app-sg-id
+/{AppName}/{Env}/network/db-sg-id
+```
+
+### Environment parameters (`cf/params/network.<env>.json`)
+
+Edit the relevant file to change VPC CIDRs. Staging and production use
+different `/16` blocks (`10.0.x.x` and `10.1.x.x`) so they never overlap.
 
 ### Deploy
 
 ```bash
-./bin/deploy-network.sh --env dev
-
-# Full options
-./bin/deploy-network.sh \
-  --env        staging \
-  --app-name   webapp \
-  --region     ap-southeast-2 \
-  --vpc-cidr   10.0.0.0/16
+./bin/deploy-network.sh --env staging
+./bin/deploy-network.sh --env production
 
 # Validate without deploying
-./bin/deploy-network.sh --env dev --dry-run
+./bin/deploy-network.sh --env staging --dry-run
 ```
 
 ---
@@ -83,11 +172,21 @@ database stack (and future app stacks) can import them by name.
 | SSM Parameters | Endpoint, port, DB name, secret ARNs |
 | Performance Insights | 7-day retention |
 
+### Environment parameters (`cf/params/database.<env>.json`)
+
+| Setting | Staging | Production |
+|---------|---------|------------|
+| Min capacity | 0.5 ACUs | 0.5 ACUs |
+| Max capacity | 4 ACUs | 4 ACUs |
+| Backup retention | 7 days | 14 days |
+| Deletion protection | off | on |
+
+Edit `cf/params/database.<env>.json` to change any of these — no pipeline
+or script changes required.
+
 ### Secrets Manager structure
 
 **Master secret** — `/{AppName}/{Env}/database/master`
-
-Populated automatically by the `SecretTargetAttachment` + AWS rotation Lambda:
 
 ```json
 {
@@ -102,9 +201,6 @@ Populated automatically by the `SecretTargetAttachment` + AWS rotation Lambda:
 
 **App secret** — `/{AppName}/{Env}/database/app`
 
-Static envelope your application code can reference for non-credential
-connection metadata (host/password fields are in the master secret):
-
 ```json
 {
   "engine":   "postgres",
@@ -116,7 +212,7 @@ connection metadata (host/password fields are in the master secret):
 
 ### Fetching credentials in your application
 
-**AWS SDK (Python / boto3):**
+**Python / boto3:**
 
 ```python
 import boto3, json
@@ -131,7 +227,7 @@ conn_str = (
 )
 ```
 
-**AWS SDK (Node.js):**
+**Node.js:**
 
 ```js
 import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
@@ -143,11 +239,11 @@ const { SecretString } = await client.send(
 const { username, password, host, port, dbname } = JSON.parse(SecretString);
 ```
 
-**CLI (quick check):**
+**CLI:**
 
 ```bash
 aws secretsmanager get-secret-value \
-  --secret-id /webapp/dev/database/master \
+  --secret-id /webapp/staging/database/master \
   --region ap-southeast-2 \
   --query SecretString --output text | python3 -m json.tool
 ```
@@ -155,22 +251,11 @@ aws secretsmanager get-secret-value \
 ### Deploy
 
 ```bash
-./bin/deploy-database.sh --env dev
-
-# Full options
-./bin/deploy-database.sh \
-  --env                 staging \
-  --app-name            webapp \
-  --region              ap-southeast-2 \
-  --db-name             appdb \
-  --master-username     dbadmin \
-  --min-capacity        0.5 \
-  --max-capacity        8 \
-  --backup-days         14 \
-  --deletion-protection      # recommended for production
+./bin/deploy-database.sh --env staging
+./bin/deploy-database.sh --env production
 
 # Validate without deploying
-./bin/deploy-database.sh --env dev --dry-run
+./bin/deploy-database.sh --env staging --dry-run
 ```
 
 ---
@@ -178,57 +263,44 @@ aws secretsmanager get-secret-value \
 ## Deploying a full environment end-to-end
 
 ```bash
-# 1. Network (2–3 min)
-./bin/deploy-network.sh --env production --deletion-protection
+# 1. IAM user — once per account, manual
+./bin/deploy-iam-github-actions-user.sh
+./bin/create-github-actions-credentials.sh --github-repo your-org/your-repo
 
-# 2. Database (5–10 min)
-./bin/deploy-database.sh --env production --deletion-protection \
-  --backup-days 14 --max-capacity 16
+# 2. Network (~2–3 min)
+./bin/deploy-network.sh --env staging
+
+# 3. Database (~5–10 min)
+./bin/deploy-database.sh --env staging
 ```
 
 ---
 
-## SSM → GitHub secrets sync
+## Tags (`cf/tags.json`)
 
-Pushes AWS credentials stored in SSM Parameter Store into a GitHub
-repository's Actions secrets/variables so CI pipelines can deploy.
+All stacks pass a shared set of tags to every resource via
+`aws cloudformation deploy --tags`. Edit `cf/tags.json` to add or change tags
+globally — no template or script changes needed.
 
-```bash
-# Authenticate gh CLI first (one-time)
-gh auth login
-
-# Sync to repo-level secrets
-./bin/sync-ssm-to-github.sh --github-repo your-org/your-repo
-
-# Sync into a specific GitHub Environment
-./bin/sync-ssm-to-github.sh --github-repo your-org/your-repo --env production
+```json
+[
+  { "Key": "git_repo",   "Value": "https://github.com/kurogami207176/webapp-environment-setup" },
+  { "Key": "managed_by", "Value": "cloudformation" },
+  { "Key": "team",       "Value": "platform" }
+]
 ```
-
-SSM parameters read:
-
-| SSM path | GitHub destination | Type |
-|----------|--------------------|------|
-| `/github-actions/aws-access-key-id` | `AWS_ACCESS_KEY_ID` | Secret |
-| `/github-actions/aws-secret-access-key` | `AWS_SECRET_ACCESS_KEY` | Secret |
-| `/github-actions/aws-account-id` | `AWS_ACCOUNT_ID` | Secret |
-| `/github-actions/aws-region` | `AWS_REGION` | Variable |
 
 ---
 
 ## Resource naming convention
 
-All resources follow: `{AppName}-{Env}-{resource-type}`
-
-Examples:
-- `webapp-production-vpc`
-- `webapp-dev-aurora-cluster`
-- `/webapp/staging/database/master`
-
-CloudFormation exports follow: `{AppName}-{Env}-{ExportKey}`
-
-Examples:
-- `webapp-production-VpcId`
-- `webapp-dev-DatabaseSecurityGroupId`
+| Pattern | Example |
+|---------|---------|
+| AWS resources | `{AppName}-{Env}-{type}` → `webapp-production-vpc` |
+| CloudFormation stacks | `{AppName}-{Env}-{stack}` → `webapp-staging-network` |
+| CloudFormation exports | `{AppName}-{Env}-{Key}` → `webapp-production-VpcId` |
+| SSM parameters | `/{AppName}/{Env}/{path}` → `/webapp/staging/network/vpc-id` |
+| Secrets Manager | `/{AppName}/{Env}/{path}` → `/webapp/production/database/master` |
 
 ---
 
@@ -239,4 +311,5 @@ Examples:
 - All data at rest is **encrypted** (`StorageEncrypted: true`).
 - All connections require **SSL** (`rds.force_ssl: 1`).
 - Master password **auto-rotates every 30 days** via Secrets Manager.
-- Deletion protection is off by default for dev; pass `--deletion-protection` for production.
+- IAM policies are scoped to `webapp-*` resources wherever AWS supports it.
+- Access key secret is never stored after creation — rotate by re-running the credentials script.

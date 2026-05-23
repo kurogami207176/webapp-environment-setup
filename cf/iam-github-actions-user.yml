@@ -1,0 +1,391 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  IAM user for GitHub Actions CI/CD pipelines, with two least-privilege
+  managed policies:
+    - GitHubActionsWebappPolicy        (ECR, CloudFormation, IAM, App Runner, DynamoDB)
+    - GitHubActionsWebappNetworkPolicy (EC2/VPC, ELB, ECS, CloudWatch Logs, SSM)
+  Access keys are NOT created here — run bin/create-github-actions-credentials.sh
+  after deploying this stack.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────────────────────────────────────
+Parameters:
+  AppName:
+    Type: String
+    Default: webapp
+    Description: App namespace — used to scope resource ARNs in policy conditions.
+
+  AwsAccountId:
+    Type: String
+    Description: AWS account ID — used to build resource ARNs inside policy documents.
+
+  Region:
+    Type: String
+    Default: ap-southeast-2
+    Description: Primary region — used to scope resource ARNs inside policy documents.
+
+  UserName:
+    Type: String
+    Default: github-actions-webapp
+    Description: IAM username to create.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Metadata
+# ─────────────────────────────────────────────────────────────────────────────
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: "Identity"}
+        Parameters: [AppName, UserName]
+      - Label: {default: "Account"}
+        Parameters: [AwsAccountId, Region]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────────────────────────────────────
+Resources:
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # IAM User
+  # ══════════════════════════════════════════════════════════════════════════
+  GitHubActionsUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref UserName
+      Tags:
+        - Key: AppName
+          Value: !Ref AppName
+        - Key: managed_by
+          Value: cloudformation
+        - Key: git_repo
+          Value: https://github.com/kurogami207176/webapp-environment-setup
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Policy 1 — GitHubActionsWebappPolicy
+  # ECR, CloudFormation, IAM, App Runner, DynamoDB
+  # ══════════════════════════════════════════════════════════════════════════
+  WebappPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: GitHubActionsWebappPolicy
+      Description: !Sub "GitHub Actions — ECR, CloudFormation, IAM, App Runner, DynamoDB for ${AppName}"
+      Users:
+        - !Ref GitHubActionsUser
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+
+          # ECR — auth token is account-wide, no resource scoping available
+          - Sid: ECRAuthGlobal
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: "*"
+
+          # ECR — repo operations scoped to webapp-* repositories
+          - Sid: ECRRepoManagement
+            Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:PutImage
+              - ecr:DescribeRepositories
+              - ecr:CreateRepository
+              - ecr:DeleteRepository
+              - ecr:DescribeImages
+              - ecr:ListImages
+              - ecr:BatchDeleteImage
+              - ecr:TagResource
+              - ecr:UntagResource
+              - ecr:ListTagsForResource
+              - ecr:PutLifecyclePolicy
+              - ecr:GetLifecyclePolicy
+              - ecr:DeleteLifecyclePolicy
+              - ecr:PutImageScanningConfiguration
+              - ecr:PutImageTagMutability
+              - ecr:PutEncryptionConfiguration
+              - ecr:GetRepositoryPolicy
+              - ecr:SetRepositoryPolicy
+              - ecr:DeleteRepositoryPolicy
+            Resource: !Sub "arn:aws:ecr:${Region}:${AwsAccountId}:repository/${AppName}-*"
+
+          # CloudFormation — global read actions have no resource-level support
+          - Sid: CloudFormationGlobal
+            Effect: Allow
+            Action:
+              - cloudformation:GetTemplateSummary
+              - cloudformation:ListStacks
+              - cloudformation:ValidateTemplate
+            Resource: "*"
+
+          # CloudFormation — stack operations scoped to webapp-* stacks
+          - Sid: CloudFormationStackManagement
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResource
+              - cloudformation:DescribeStackResources
+              - cloudformation:GetTemplate
+              - cloudformation:ListStackResources
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:ListChangeSets
+              - cloudformation:GetStackPolicy
+              - cloudformation:SetStackPolicy
+            Resource: !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/${AppName}-*/*"
+
+          # IAM — scoped to webapp-* roles and the GitHub OIDC provider
+          - Sid: IAMManagement
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:UpdateRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PassRole
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:CreateOpenIDConnectProvider
+              - iam:DeleteOpenIDConnectProvider
+              - iam:GetOpenIDConnectProvider
+              - iam:UpdateOpenIDConnectProviderThumbprint
+              - iam:AddClientIDToOpenIDConnectProvider
+              - iam:RemoveClientIDFromOpenIDConnectProvider
+              - iam:TagOpenIDConnectProvider
+              - iam:UntagOpenIDConnectProvider
+            Resource:
+              - !Sub "arn:aws:iam::${AwsAccountId}:role/${AppName}-*"
+              - !Sub "arn:aws:iam::${AwsAccountId}:oidc-provider/token.actions.githubusercontent.com"
+
+          # App Runner — no resource-level ARN filtering supported
+          - Sid: AppRunnerManagement
+            Effect: Allow
+            Action:
+              - apprunner:CreateService
+              - apprunner:UpdateService
+              - apprunner:DeleteService
+              - apprunner:DescribeService
+              - apprunner:ListServices
+              - apprunner:StartDeployment
+              - apprunner:PauseService
+              - apprunner:ResumeService
+              - apprunner:TagResource
+              - apprunner:UntagResource
+              - apprunner:ListTagsForResource
+              - apprunner:CreateAutoScalingConfiguration
+              - apprunner:UpdateAutoScalingConfiguration
+              - apprunner:DeleteAutoScalingConfiguration
+              - apprunner:DescribeAutoScalingConfiguration
+              - apprunner:ListAutoScalingConfigurations
+            Resource: "*"
+
+          # DynamoDB — scoped to webapp-* tables
+          - Sid: DynamoDBManagement
+            Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:UpdateTable
+              - dynamodb:DeleteTable
+              - dynamodb:DescribeTable
+              - dynamodb:ListTables
+              - dynamodb:TagResource
+              - dynamodb:UntagResource
+              - dynamodb:ListTagsOfResource
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:UpdateTimeToLive
+              - dynamodb:DescribeContinuousBackups
+              - dynamodb:UpdateContinuousBackups
+            Resource: !Sub "arn:aws:dynamodb:${Region}:${AwsAccountId}:table/${AppName}-*"
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Policy 2 — GitHubActionsWebappNetworkPolicy
+  # EC2/VPC, ELB, ECS, CloudWatch Logs, SSM
+  # ══════════════════════════════════════════════════════════════════════════
+  WebappNetworkPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: GitHubActionsWebappNetworkPolicy
+      Description: !Sub "GitHub Actions — EC2/VPC, ELB, ECS, Logs, SSM for ${AppName}"
+      Users:
+        - !Ref GitHubActionsUser
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+
+          # EC2/VPC — no resource-level support for most network actions
+          - Sid: EC2NetworkManagement
+            Effect: Allow
+            Action:
+              - ec2:CreateVpc
+              - ec2:DeleteVpc
+              - ec2:DescribeVpcs
+              - ec2:ModifyVpcAttribute
+              - ec2:CreateSubnet
+              - ec2:DeleteSubnet
+              - ec2:DescribeSubnets
+              - ec2:ModifySubnetAttribute
+              - ec2:CreateInternetGateway
+              - ec2:DeleteInternetGateway
+              - ec2:DescribeInternetGateways
+              - ec2:AttachInternetGateway
+              - ec2:DetachInternetGateway
+              - ec2:CreateNatGateway
+              - ec2:DeleteNatGateway
+              - ec2:DescribeNatGateways
+              - ec2:AllocateAddress
+              - ec2:ReleaseAddress
+              - ec2:DescribeAddresses
+              - ec2:AssociateAddress
+              - ec2:DisassociateAddress
+              - ec2:CreateRouteTable
+              - ec2:DeleteRouteTable
+              - ec2:DescribeRouteTables
+              - ec2:CreateRoute
+              - ec2:DeleteRoute
+              - ec2:AssociateRouteTable
+              - ec2:DisassociateRouteTable
+              - ec2:CreateSecurityGroup
+              - ec2:DeleteSecurityGroup
+              - ec2:DescribeSecurityGroups
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:RevokeSecurityGroupIngress
+              - ec2:AuthorizeSecurityGroupEgress
+              - ec2:RevokeSecurityGroupEgress
+              - ec2:CreateTags
+              - ec2:DeleteTags
+              - ec2:DescribeTags
+              - ec2:DescribeAvailabilityZones
+              - ec2:DescribeAccountAttributes
+            Resource: "*"
+
+          # ELB — no resource-level support for most actions
+          - Sid: ELBManagement
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:CreateLoadBalancer
+              - elasticloadbalancing:DeleteLoadBalancer
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DescribeLoadBalancerAttributes
+              - elasticloadbalancing:ModifyLoadBalancerAttributes
+              - elasticloadbalancing:CreateTargetGroup
+              - elasticloadbalancing:DeleteTargetGroup
+              - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeTargetGroupAttributes
+              - elasticloadbalancing:ModifyTargetGroup
+              - elasticloadbalancing:ModifyTargetGroupAttributes
+              - elasticloadbalancing:CreateListener
+              - elasticloadbalancing:DeleteListener
+              - elasticloadbalancing:DescribeListeners
+              - elasticloadbalancing:ModifyListener
+              - elasticloadbalancing:DescribeRules
+              - elasticloadbalancing:AddTags
+              - elasticloadbalancing:RemoveTags
+              - elasticloadbalancing:DescribeTags
+              - elasticloadbalancing:RegisterTargets
+              - elasticloadbalancing:DeregisterTargets
+              - elasticloadbalancing:DescribeTargetHealth
+            Resource: "*"
+
+          # ECS — no resource-level support for most actions
+          - Sid: ECSManagement
+            Effect: Allow
+            Action:
+              - ecs:CreateCluster
+              - ecs:DeleteCluster
+              - ecs:DescribeClusters
+              - ecs:PutClusterCapacityProviders
+              - ecs:RegisterTaskDefinition
+              - ecs:DeregisterTaskDefinition
+              - ecs:DescribeTaskDefinition
+              - ecs:ListTaskDefinitions
+              - ecs:CreateService
+              - ecs:UpdateService
+              - ecs:DeleteService
+              - ecs:DescribeServices
+              - ecs:ListServices
+              - ecs:TagResource
+              - ecs:UntagResource
+              - ecs:ListTagsForResource
+            Resource: "*"
+
+          # CloudWatch Logs
+          - Sid: CloudWatchLogsManagement
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:DeleteLogGroup
+              - logs:DescribeLogGroups
+              - logs:PutRetentionPolicy
+              - logs:DeleteRetentionPolicy
+              - logs:TagLogGroup
+              - logs:UntagLogGroup
+              - logs:ListTagsLogGroup
+              - logs:TagResource
+              - logs:UntagResource
+              - logs:ListTagsForResource
+            Resource: "*"
+
+          # SSM — full parameter path access
+          - Sid: SSMManagement
+            Effect: Allow
+            Action:
+              - ssm:PutParameter
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+              - ssm:DeleteParameter
+              - ssm:DeleteParameters
+              - ssm:DescribeParameters
+              - ssm:LabelParameterVersion
+              - ssm:AddTagsToResource
+              - ssm:RemoveTagsFromResource
+              - ssm:ListTagsForResource
+            Resource:
+              - !Sub "arn:aws:ssm:${Region}:${AwsAccountId}:parameter/*"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────────────────────────────────────
+Outputs:
+
+  UserName:
+    Description: IAM username
+    Value: !Ref GitHubActionsUser
+    Export:
+      Name: !Sub "${AppName}-GitHubActionsUserName"
+
+  UserArn:
+    Description: IAM user ARN
+    Value: !GetAtt GitHubActionsUser.Arn
+    Export:
+      Name: !Sub "${AppName}-GitHubActionsUserArn"
+
+  WebappPolicyArn:
+    Description: ARN of GitHubActionsWebappPolicy
+    Value: !Ref WebappPolicy
+    Export:
+      Name: !Sub "${AppName}-GitHubActionsWebappPolicyArn"
+
+  WebappNetworkPolicyArn:
+    Description: ARN of GitHubActionsWebappNetworkPolicy
+    Value: !Ref WebappNetworkPolicy
+    Export:
+      Name: !Sub "${AppName}-GitHubActionsWebappNetworkPolicyArn"
