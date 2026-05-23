@@ -164,19 +164,6 @@ Resources:
           Value: database
 
   # ══════════════════════════════════════════════════════════════════════════
-  # RDS Service-Linked Role
-  # Pre-creating this ensures CloudFormation never needs to call
-  # iam:CreateServiceLinkedRole at cluster-creation time, which avoids
-  # permission errors even when the role already exists in the account.
-  # The resource is a no-op if the role already exists.
-  # ══════════════════════════════════════════════════════════════════════════
-  RdsServiceLinkedRole:
-    Type: AWS::IAM::ServiceLinkedRole
-    Properties:
-      AWSServiceName: rds.amazonaws.com
-      Description: Service-linked role for Amazon RDS
-
-  # ══════════════════════════════════════════════════════════════════════════
   # DB Subnet Group  (spans both isolated subnets)
   # ══════════════════════════════════════════════════════════════════════════
   DbSubnetGroup:
@@ -216,7 +203,6 @@ Resources:
   # ══════════════════════════════════════════════════════════════════════════
   DbCluster:
     Type: AWS::RDS::DBCluster
-    DependsOn: RdsServiceLinkedRole
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:

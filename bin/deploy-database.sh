@@ -133,6 +133,16 @@ fi
 
 check_network_stack
 
+# ── Ensure RDS service-linked role exists ─────────────────────────────────────
+# AWS::IAM::ServiceLinkedRole fails in CloudFormation if the role already
+# exists, so we create it here with the CLI which ignores AlreadyExists.
+echo ""
+echo "▶ Ensuring AWSServiceRoleForRDS exists…"
+aws iam create-service-linked-role \
+  --aws-service-name rds.amazonaws.com 2>/dev/null \
+  && echo "  ✓ Created AWSServiceRoleForRDS" \
+  || echo "  ✓ AWSServiceRoleForRDS already exists"
+
 # ── Deploy ────────────────────────────────────────────────────────────────────
 echo ""
 echo "▶ Deploying stack (${STACK_NAME})…"
