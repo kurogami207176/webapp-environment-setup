@@ -150,6 +150,16 @@ Resources:
               - !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/${AppName}-template-*/*"
               - !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/dns-config/*"
 
+          # CloudFormation — CreateChangeSet on AWS-owned transforms (e.g. SecretsManager-2020-07-23).
+          # Templates that use AWS::SecretsManager::RotationSchedule trigger this transform ARN
+          # and CloudFormation requires explicit CreateChangeSet permission on it.
+          - Sid: CloudFormationTransforms
+            Effect: Allow
+            Action:
+              - cloudformation:CreateChangeSet
+            Resource:
+              - !Sub "arn:aws:cloudformation:${Region}:aws:transform/*"
+
           # IAM — scoped to webapp-* roles and the GitHub OIDC provider
           - Sid: IAMManagement
             Effect: Allow
