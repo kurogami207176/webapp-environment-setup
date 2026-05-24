@@ -204,6 +204,6 @@ jobs:
             echo "### Secrets Manager paths"
             echo "| Secret | Path |"
             echo "|--------|------|"
-            echo "| Master credentials | \`/${APP_NAME}/production/database/master\` |"
+            echo "| Master credentials | \`/${APP_NAME}/production/database/master_cred\` |"
             echo "| App connection     | \`/${APP_NAME}/production/database/app\` |"
           } >> "$GITHUB_STEP_SUMMARY"

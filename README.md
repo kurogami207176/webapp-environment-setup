@@ -223,7 +223,7 @@ different `/16` blocks (`10.0.x.x` and `10.1.x.x`) so they never overlap.
 | Aurora PostgreSQL Serverless v2 | Writer-only instance (`db.serverless`) |
 | DB Subnet Group | Spans both isolated subnets |
 | DB Cluster Parameter Group | SSL forced · UTC timezone · slow query log (>1 s) |
-| Secrets Manager — master secret | `/{app}/{env}/database/master` — auto-rotates every 30 days |
+| Secrets Manager — master secret | `/{app}/{env}/database/master_cred` — auto-rotates every 30 days |
 | Secrets Manager — app secret | `/{app}/{env}/database/app` — static connection envelope |
 | SSM Parameters | Endpoint, port, DB name, secret ARNs |
 | Performance Insights | 7-day retention |
@@ -242,7 +242,7 @@ or script changes required.
 
 ### Secrets Manager structure
 
-**Master secret** — `/{AppName}/{Env}/database/master`
+**Master secret** — `/{AppName}/{Env}/database/master_cred`
 
 ```json
 {
@@ -275,7 +275,7 @@ import boto3, json
 
 sm = boto3.client("secretsmanager", region_name="ap-southeast-2")
 secret = json.loads(
-    sm.get_secret_value(SecretId="/webapp/production/database/master")["SecretString"]
+    sm.get_secret_value(SecretId="/webapp/production/database/master_cred")["SecretString"]
 )
 conn_str = (
     f"postgresql://{secret['username']}:{secret['password']}"
@@ -290,7 +290,7 @@ import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-sec
 
 const client = new SecretsManagerClient({ region: "ap-southeast-2" });
 const { SecretString } = await client.send(
-  new GetSecretValueCommand({ SecretId: "/webapp/production/database/master" })
+  new GetSecretValueCommand({ SecretId: "/webapp/production/database/master_cred" })
 );
 const { username, password, host, port, dbname } = JSON.parse(SecretString);
 ```
@@ -299,7 +299,7 @@ const { username, password, host, port, dbname } = JSON.parse(SecretString);
 
 ```bash
 aws secretsmanager get-secret-value \
-  --secret-id /webapp/staging/database/master \
+  --secret-id /webapp/staging/database/master_cred \
   --region ap-southeast-2 \
   --query SecretString --output text | python3 -m json.tool
 ```
@@ -358,7 +358,7 @@ globally — no template or script changes needed.
 | CloudFormation stacks | `{AppName}-{Env}-{stack}` → `webapp-staging-network` |
 | CloudFormation exports | `{AppName}-{Env}-{Key}` → `webapp-production-VpcId` |
 | SSM parameters | `/{AppName}/{Env}/{path}` → `/webapp/staging/network/vpc-id` |
-| Secrets Manager | `/{AppName}/{Env}/{path}` → `/webapp/production/database/master` |
+| Secrets Manager | `/{AppName}/{Env}/{path}` → `/webapp/production/database/master_cred` |
 
 ---
 

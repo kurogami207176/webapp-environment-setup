@@ -119,7 +119,7 @@ Resources:
   DbMasterSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: !Sub "/${AppName}/${Env}/database/master"
+      Name: !Sub "/${AppName}/${Env}/database/master_cred"
       Description: !Sub "Aurora master credentials for ${AppName}-${Env}"
       GenerateSecretString:
         SecretStringTemplate: !Sub '{"username": "${MasterUsername}"}'
@@ -284,7 +284,7 @@ Resources:
   # Instead, enable rotation via a post-deploy CLI command:
   #
   #   aws secretsmanager rotate-secret \
-  #     --secret-id /<AppName>/<Env>/database/master \
+  #     --secret-id /<AppName>/<Env>/database/master_cred \
   #     --rotate-immediately
   #
   # Or deploy the rotation Lambda separately using:
@@ -333,7 +333,7 @@ Resources:
   SsmMasterSecretArn:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: !Sub "/${AppName}/${Env}/database/master-secret-arn"
+      Name: !Sub "/${AppName}/${Env}/database/master_cred-secret-arn"
       Type: String
       Value: !Ref DbMasterSecret
       Description: !Sub "ARN of the master credentials secret for ${AppName}-${Env}"

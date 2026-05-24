@@ -168,12 +168,12 @@ aws cloudformation describe-stacks \
 
 echo ""
 echo "▶ Secrets Manager entries:"
-echo "  Master credentials : /${APP_NAME}/${ENV}/database/master"
+echo "  Master credentials : /${APP_NAME}/${ENV}/database/master_cred"
 echo "  App connection     : /${APP_NAME}/${ENV}/database/app"
 echo ""
 echo "▶ Fetch credentials:"
 echo "  aws secretsmanager get-secret-value \\"
-echo "    --secret-id /${APP_NAME}/${ENV}/database/master \\"
+echo "    --secret-id /${APP_NAME}/${ENV}/database/master_cred \\"
 echo "    --region ${REGION} \\"
 echo "    --query SecretString --output text | python3 -m json.tool"
 
