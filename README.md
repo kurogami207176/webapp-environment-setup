@@ -275,7 +275,7 @@ import boto3, json
 
 sm = boto3.client("secretsmanager", region_name="ap-southeast-2")
 secret = json.loads(
-    sm.get_secret_value(SecretId="/webapp/production/database/master2")["SecretString"]
+    sm.get_secret_value(SecretId="/webapp/production/database/master")["SecretString"]
 )
 conn_str = (
     f"postgresql://{secret['username']}:{secret['password']}"
@@ -290,7 +290,7 @@ import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-sec
 
 const client = new SecretsManagerClient({ region: "ap-southeast-2" });
 const { SecretString } = await client.send(
-  new GetSecretValueCommand({ SecretId: "/webapp/production/database/master2" })
+  new GetSecretValueCommand({ SecretId: "/webapp/production/database/master" })
 );
 const { username, password, host, port, dbname } = JSON.parse(SecretString);
 ```
@@ -358,7 +358,7 @@ globally — no template or script changes needed.
 | CloudFormation stacks | `{AppName}-{Env}-{stack}` → `webapp-staging-network` |
 | CloudFormation exports | `{AppName}-{Env}-{Key}` → `webapp-production-VpcId` |
 | SSM parameters | `/{AppName}/{Env}/{path}` → `/webapp/staging/network/vpc-id` |
-| Secrets Manager | `/{AppName}/{Env}/{path}` → `/webapp/production/database/master2` |
+| Secrets Manager | `/{AppName}/{Env}/{path}` → `/webapp/production/database/master` |
 
 ---
 
