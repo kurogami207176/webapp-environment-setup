@@ -1,6 +1,4 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform:
-  - AWS::SecretsManager-2020-07-23
 Description: >
   Aurora PostgreSQL Serverless v2 (writer-only) cluster.
   Imports network outputs from the network stack.
@@ -281,23 +279,19 @@ Resources:
 
   # ══════════════════════════════════════════════════════════════════════════
   # Secrets Manager Rotation
-  # Uses the AWS-managed SingleUser rotation Lambda.
-  # Rotates the master password every 30 days.
+  # NOTE: HostedRotationLambda creates a nested stack that requires
+  # CAPABILITY_AUTO_EXPAND on the child — a known AWS CFN limitation.
+  # Instead, enable rotation via a post-deploy CLI command:
+  #
+  #   aws secretsmanager rotate-secret \
+  #     --secret-id /<AppName>/<Env>/database/master \
+  #     --rotate-immediately
+  #
+  # Or deploy the rotation Lambda separately using:
+  #   aws serverlessrepo create-cloud-formation-change-set \
+  #     --application-id arn:aws:serverlessrepo:us-east-1:297356227824:applications/SecretsManagerRDSPostgreSQLRotationSingleUser
   # ══════════════════════════════════════════════════════════════════════════
-  DbSecretRotation:
-    Type: AWS::SecretsManager::RotationSchedule
-    DependsOn: DbSecretAttachment
-    Properties:
-      SecretId: !Ref DbMasterSecret
-      HostedRotationLambda:
-        RotationType: PostgreSQLSingleUser
-        RotationLambdaName: !Sub "${AppName}-${Env}-db-secret-rotation"
-        VpcSecurityGroupIds:
-          Fn::ImportValue: !Sub "${AppName}-${Env}-DatabaseSecurityGroupId"
-        VpcSubnetIds:
-          Fn::ImportValue: !Sub "${AppName}-${Env}-IsolatedSubnetIds"
-      RotationRules:
-        AutomaticallyAfterDays: 30
+  # DbSecretRotation is intentionally omitted — set up rotation post-deploy.
 
   # ══════════════════════════════════════════════════════════════════════════
   # SSM Parameters — handy for scripts / CI that need non-sensitive values
