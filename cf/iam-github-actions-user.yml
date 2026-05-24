@@ -1,9 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  IAM user for GitHub Actions CI/CD pipelines, with two least-privilege
-  managed policies:
-    - GitHubActionsWebappPolicy        (ECR, CloudFormation, IAM, App Runner, DynamoDB, RDS, Secrets Manager)
-    - GitHubActionsWebappNetworkPolicy (EC2/VPC, ELB, ECS, CloudWatch Logs, SSM, Lambda)
+  IAM user for GitHub Actions CI/CD pipelines with a broad allow-all policy
+  minus explicitly denied catastrophic/account-level actions.
   Access keys are NOT created here — run bin/create-github-actions-credentials.sh
   after deploying this stack.
 
@@ -14,16 +12,16 @@ Parameters:
   AppName:
     Type: String
     Default: webapp
-    Description: App namespace — used to scope resource ARNs in policy conditions.
+    Description: App namespace — used for tagging.
 
   AwsAccountId:
     Type: String
-    Description: AWS account ID — used to build resource ARNs inside policy documents.
+    Description: AWS account ID.
 
   Region:
     Type: String
     Default: ap-southeast-2
-    Description: Primary region — used to scope resource ARNs inside policy documents.
+    Description: Primary region.
 
   UserName:
     Type: String
@@ -62,434 +60,103 @@ Resources:
           Value: https://github.com/kurogami207176/webapp-environment-setup
 
   # ══════════════════════════════════════════════════════════════════════════
-  # Policy 1 — GitHubActionsWebappPolicy
-  # ECR, CloudFormation, IAM, App Runner, DynamoDB, RDS, Secrets Manager
+  # Policy — broad allow-all with explicit denies on catastrophic actions
+  #
+  # Denied categories:
+  #   - AWS Organizations & account closure
+  #   - Billing / cost management modifications
+  #   - IAM user/group/key management (can't create new principals or escalate)
+  #   - MFA device management
+  #   - S3 bucket deletion
+  #   - Audit trail tampering (CloudTrail, GuardDuty, SecurityHub, Config)
+  #   - KMS key destruction
   # ══════════════════════════════════════════════════════════════════════════
-  WebappPolicy:
+  WebappDeployPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      ManagedPolicyName: GitHubActionsWebappPolicy
-      Description: !Sub "GitHub Actions — ECR, CloudFormation, IAM, App Runner, DynamoDB, RDS, Secrets Manager, Route53, ACM for ${AppName}"
+      ManagedPolicyName: GitHubActionsWebappDeployPolicy
+      Description: !Sub "GitHub Actions broad deploy policy for ${AppName} — denies only catastrophic actions"
       Users:
         - !Ref GitHubActionsUser
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
 
-          # ECR — auth token is account-wide, no resource scoping available
-          - Sid: ECRAuthGlobal
+          - Sid: AllowAll
             Effect: Allow
-            Action:
-              - ecr:GetAuthorizationToken
+            Action: "*"
             Resource: "*"
 
-          # ECR — repo operations scoped to webapp-* repositories
-          - Sid: ECRRepoManagement
-            Effect: Allow
+          - Sid: DenyAccountNuke
+            Effect: Deny
             Action:
-              - ecr:BatchCheckLayerAvailability
-              - ecr:GetDownloadUrlForLayer
-              - ecr:BatchGetImage
-              - ecr:InitiateLayerUpload
-              - ecr:UploadLayerPart
-              - ecr:CompleteLayerUpload
-              - ecr:PutImage
-              - ecr:DescribeRepositories
-              - ecr:CreateRepository
-              - ecr:DeleteRepository
-              - ecr:DescribeImages
-              - ecr:ListImages
-              - ecr:BatchDeleteImage
-              - ecr:TagResource
-              - ecr:UntagResource
-              - ecr:ListTagsForResource
-              - ecr:PutLifecyclePolicy
-              - ecr:GetLifecyclePolicy
-              - ecr:DeleteLifecyclePolicy
-              - ecr:PutImageScanningConfiguration
-              - ecr:PutImageTagMutability
-              - ecr:PutEncryptionConfiguration
-              - ecr:GetRepositoryPolicy
-              - ecr:SetRepositoryPolicy
-              - ecr:DeleteRepositoryPolicy
-            Resource: !Sub "arn:aws:ecr:${Region}:${AwsAccountId}:repository/${AppName}-*"
+              # AWS Organizations
+              - organizations:*
 
-          # CloudFormation — global read actions have no resource-level support
-          - Sid: CloudFormationGlobal
-            Effect: Allow
-            Action:
-              - cloudformation:GetTemplateSummary
-              - cloudformation:ListStacks
-              - cloudformation:ValidateTemplate
-            Resource: "*"
+              # Account closure
+              - account:CloseAccount
 
-          # CloudFormation — stack operations.
-          # Covers webapp-* and webapp-template-* (app repo stacks) plus
-          # dns-config (shared infra stack deployed by this repo).
-          - Sid: CloudFormationStackManagement
-            Effect: Allow
-            Action:
-              - cloudformation:CreateStack
-              - cloudformation:UpdateStack
-              - cloudformation:DeleteStack
-              - cloudformation:DescribeStacks
-              - cloudformation:DescribeStackEvents
-              - cloudformation:DescribeStackResource
-              - cloudformation:DescribeStackResources
-              - cloudformation:GetTemplate
-              - cloudformation:ListStackResources
-              - cloudformation:CreateChangeSet
-              - cloudformation:DeleteChangeSet
-              - cloudformation:DescribeChangeSet
-              - cloudformation:ExecuteChangeSet
-              - cloudformation:ListChangeSets
-              - cloudformation:GetStackPolicy
-              - cloudformation:SetStackPolicy
-            Resource:
-              - !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/${AppName}-*/*"
-              - !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/${AppName}-template-*/*"
-              - !Sub "arn:aws:cloudformation:${Region}:${AwsAccountId}:stack/dns-config/*"
+              # Billing
+              - billing:*
+              - budgets:ModifyBudget
+              - aws-portal:Modify*
 
-          # CloudFormation — CreateChangeSet on AWS-owned transforms (e.g. SecretsManager-2020-07-23).
-          # Templates that use AWS::SecretsManager::RotationSchedule trigger this transform ARN
-          # and CloudFormation requires explicit CreateChangeSet permission on it.
-          - Sid: CloudFormationTransforms
-            Effect: Allow
-            Action:
-              - cloudformation:CreateChangeSet
-            Resource:
-              - !Sub "arn:aws:cloudformation:${Region}:aws:transform/*"
+              # IAM — MFA devices
+              - iam:CreateVirtualMFADevice
+              - iam:DeleteVirtualMFADevice
+              - iam:DeactivateMFADevice
+              - iam:EnableMFADevice
+              - iam:ResyncMFADevice
 
-          # IAM — scoped to webapp-* roles and the GitHub OIDC provider
-          - Sid: IAMManagement
-            Effect: Allow
-            Action:
-              - iam:CreateRole
-              - iam:DeleteRole
-              - iam:GetRole
-              - iam:UpdateRole
-              - iam:AttachRolePolicy
-              - iam:DetachRolePolicy
-              - iam:PassRole
-              - iam:PutRolePolicy
-              - iam:DeleteRolePolicy
-              - iam:GetRolePolicy
-              - iam:ListRolePolicies
-              - iam:ListAttachedRolePolicies
-              - iam:TagRole
-              - iam:UntagRole
-              - iam:CreateOpenIDConnectProvider
-              - iam:DeleteOpenIDConnectProvider
-              - iam:GetOpenIDConnectProvider
-              - iam:UpdateOpenIDConnectProviderThumbprint
-              - iam:AddClientIDToOpenIDConnectProvider
-              - iam:RemoveClientIDFromOpenIDConnectProvider
-              - iam:TagOpenIDConnectProvider
-              - iam:UntagOpenIDConnectProvider
-            Resource:
-              - !Sub "arn:aws:iam::${AwsAccountId}:role/${AppName}-*"
-              - !Sub "arn:aws:iam::${AwsAccountId}:oidc-provider/token.actions.githubusercontent.com"
+              # IAM — console login profiles
+              - iam:CreateLoginProfile
+              - iam:UpdateLoginProfile
+              - iam:DeleteLoginProfile
 
-          # IAM — service-linked roles for AWS services (RDS, ECS, ELB, App Runner).
-          # Scoped by AWSServiceName condition so it can't create arbitrary roles.
-          - Sid: IAMServiceLinkedRoles
-            Effect: Allow
-            Action:
-              - iam:CreateServiceLinkedRole
-            Resource: !Sub "arn:aws:iam::${AwsAccountId}:role/aws-service-role/*"
-            Condition:
-              StringLike:
-                "iam:AWSServiceName":
-                  - rds.amazonaws.com
-                  - ecs.amazonaws.com
-                  - elasticloadbalancing.amazonaws.com
-                  - apprunner.amazonaws.com
+              # IAM — account-level settings
+              - iam:CreateAccountAlias
+              - iam:DeleteAccountAlias
+              - iam:UpdateAccountPasswordPolicy
+              - iam:DeleteAccountPasswordPolicy
+              - iam:SetSecurityTokenServicePreferences
 
-          # App Runner — no resource-level ARN filtering supported
-          - Sid: AppRunnerManagement
-            Effect: Allow
-            Action:
-              - apprunner:CreateService
-              - apprunner:UpdateService
-              - apprunner:DeleteService
-              - apprunner:DescribeService
-              - apprunner:ListServices
-              - apprunner:StartDeployment
-              - apprunner:PauseService
-              - apprunner:ResumeService
-              - apprunner:TagResource
-              - apprunner:UntagResource
-              - apprunner:ListTagsForResource
-              - apprunner:CreateAutoScalingConfiguration
-              - apprunner:UpdateAutoScalingConfiguration
-              - apprunner:DeleteAutoScalingConfiguration
-              - apprunner:DescribeAutoScalingConfiguration
-              - apprunner:ListAutoScalingConfigurations
-            Resource: "*"
+              # IAM — user/group management (prevent privilege escalation)
+              - iam:CreateUser
+              - iam:DeleteUser
+              - iam:UpdateUser
+              - iam:AttachUserPolicy
+              - iam:DetachUserPolicy
+              - iam:PutUserPolicy
+              - iam:DeleteUserPolicy
+              - iam:CreateAccessKey
+              - iam:DeleteAccessKey
+              - iam:UpdateAccessKey
+              - iam:CreateGroup
+              - iam:DeleteGroup
+              - iam:AddUserToGroup
+              - iam:RemoveUserFromGroup
+              - iam:AttachGroupPolicy
+              - iam:DetachGroupPolicy
+              - iam:PutGroupPolicy
+              - iam:DeleteGroupPolicy
 
-          # DynamoDB — scoped to webapp-* tables
-          - Sid: DynamoDBManagement
-            Effect: Allow
-            Action:
-              - dynamodb:CreateTable
-              - dynamodb:UpdateTable
-              - dynamodb:DeleteTable
-              - dynamodb:DescribeTable
-              - dynamodb:ListTables
-              - dynamodb:TagResource
-              - dynamodb:UntagResource
-              - dynamodb:ListTagsOfResource
-              - dynamodb:DescribeTimeToLive
-              - dynamodb:UpdateTimeToLive
-              - dynamodb:DescribeContinuousBackups
-              - dynamodb:UpdateContinuousBackups
-            Resource: !Sub "arn:aws:dynamodb:${Region}:${AwsAccountId}:table/${AppName}-*"
+              # S3 — bucket deletion
+              - s3:DeleteBucket
 
-          # RDS / Aurora — cluster, instance, subnet group, parameter group, snapshots
-          - Sid: RDSManagement
-            Effect: Allow
-            Action:
-              - rds:CreateDBCluster
-              - rds:DeleteDBCluster
-              - rds:DescribeDBClusters
-              - rds:ModifyDBCluster
-              - rds:RestoreDBClusterFromSnapshot
-              - rds:CreateDBInstance
-              - rds:DeleteDBInstance
-              - rds:DescribeDBInstances
-              - rds:ModifyDBInstance
-              - rds:CreateDBSubnetGroup
-              - rds:DeleteDBSubnetGroup
-              - rds:DescribeDBSubnetGroups
-              - rds:ModifyDBSubnetGroup
-              - rds:CreateDBClusterParameterGroup
-              - rds:DeleteDBClusterParameterGroup
-              - rds:DescribeDBClusterParameterGroups
-              - rds:ModifyDBClusterParameterGroup
-              - rds:DescribeDBClusterParameters
-              - rds:AddTagsToResource
-              - rds:RemoveTagsFromResource
-              - rds:ListTagsForResource
-              - rds:CreateDBClusterSnapshot
-              - rds:DeleteDBClusterSnapshot
-              - rds:DescribeDBClusterSnapshots
-              - rds:DescribeEngineDefaultClusterParameters
-              - rds:DescribeDBEngineVersions
-              - rds:StartDBCluster
-              - rds:StopDBCluster
-            Resource: "*"
+              # Audit trail tampering
+              - cloudtrail:DeleteTrail
+              - cloudtrail:StopLogging
+              - guardduty:DeleteDetector
+              - guardduty:DisassociateFromMasterAccount
+              - securityhub:DisableSecurityHub
+              - config:DeleteConfigurationRecorder
+              - config:StopConfigurationRecorder
 
-          # Route53 + ACM — DNS records and certificate provisioning (dns.yml)
-          - Sid: Route53ACM
-            Effect: Allow
-            Action:
-              - route53:ChangeResourceRecordSets
-              - route53:GetChange
-              - route53:ListHostedZones
-              - route53:ListResourceRecordSets
-              - route53:GetHostedZone
-              - acm:RequestCertificate
-              - acm:DescribeCertificate
-              - acm:DeleteCertificate
-              - acm:ListCertificates
-              - acm:AddTagsToCertificate
-              - acm:RemoveTagsFromCertificate
-              - acm:ListTagsForCertificate
-            Resource: "*"
+              # Encryption
+              - ec2:DisableEbsEncryptionByDefault
+              - kms:ScheduleKeyDeletion
+              - kms:DisableKey
 
-          # Secrets Manager — master credentials + rotation
-          - Sid: SecretsManagerManagement
-            Effect: Allow
-            Action:
-              - secretsmanager:CreateSecret
-              - secretsmanager:DeleteSecret
-              - secretsmanager:DescribeSecret
-              - secretsmanager:GetSecretValue
-              - secretsmanager:PutSecretValue
-              - secretsmanager:UpdateSecret
-              - secretsmanager:RotateSecret
-              - secretsmanager:CancelRotateSecret
-              - secretsmanager:GetRandomPassword
-              - secretsmanager:TagResource
-              - secretsmanager:UntagResource
-              - secretsmanager:ListSecretVersionIds
-              - secretsmanager:AttachResourcePolicy
-              - secretsmanager:DeleteResourcePolicy
-              - secretsmanager:GetResourcePolicy
-            Resource: "*"
-
-  # ══════════════════════════════════════════════════════════════════════════
-  # Policy 2 — GitHubActionsWebappNetworkPolicy
-  # EC2/VPC, ELB, ECS, CloudWatch Logs, SSM, Lambda
-  # ══════════════════════════════════════════════════════════════════════════
-  WebappNetworkPolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      ManagedPolicyName: GitHubActionsWebappNetworkPolicy
-      Description: !Sub "GitHub Actions — EC2/VPC, ELB, ECS, Logs, SSM, Lambda for ${AppName}"
-      Users:
-        - !Ref GitHubActionsUser
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-
-          # EC2/VPC — no resource-level support for most network actions.
-          # Includes ENI actions needed by the Secrets Manager rotation Lambda.
-          - Sid: EC2NetworkManagement
-            Effect: Allow
-            Action:
-              - ec2:CreateVpc
-              - ec2:DeleteVpc
-              - ec2:DescribeVpcs
-              - ec2:ModifyVpcAttribute
-              - ec2:CreateSubnet
-              - ec2:DeleteSubnet
-              - ec2:DescribeSubnets
-              - ec2:ModifySubnetAttribute
-              - ec2:CreateInternetGateway
-              - ec2:DeleteInternetGateway
-              - ec2:DescribeInternetGateways
-              - ec2:AttachInternetGateway
-              - ec2:DetachInternetGateway
-              - ec2:CreateNatGateway
-              - ec2:DeleteNatGateway
-              - ec2:DescribeNatGateways
-              - ec2:AllocateAddress
-              - ec2:ReleaseAddress
-              - ec2:DescribeAddresses
-              - ec2:AssociateAddress
-              - ec2:DisassociateAddress
-              - ec2:CreateRouteTable
-              - ec2:DeleteRouteTable
-              - ec2:DescribeRouteTables
-              - ec2:CreateRoute
-              - ec2:DeleteRoute
-              - ec2:AssociateRouteTable
-              - ec2:DisassociateRouteTable
-              - ec2:CreateSecurityGroup
-              - ec2:DeleteSecurityGroup
-              - ec2:DescribeSecurityGroups
-              - ec2:AuthorizeSecurityGroupIngress
-              - ec2:RevokeSecurityGroupIngress
-              - ec2:AuthorizeSecurityGroupEgress
-              - ec2:RevokeSecurityGroupEgress
-              - ec2:CreateTags
-              - ec2:DeleteTags
-              - ec2:DescribeTags
-              - ec2:DescribeAvailabilityZones
-              - ec2:DescribeAccountAttributes
-              - ec2:DescribeNetworkInterfaces
-              - ec2:CreateNetworkInterface
-              - ec2:DeleteNetworkInterface
-              - ec2:DetachNetworkInterface
-            Resource: "*"
-
-          # ELB — no resource-level support for most actions
-          - Sid: ELBManagement
-            Effect: Allow
-            Action:
-              - elasticloadbalancing:CreateLoadBalancer
-              - elasticloadbalancing:DeleteLoadBalancer
-              - elasticloadbalancing:DescribeLoadBalancers
-              - elasticloadbalancing:DescribeLoadBalancerAttributes
-              - elasticloadbalancing:ModifyLoadBalancerAttributes
-              - elasticloadbalancing:CreateTargetGroup
-              - elasticloadbalancing:DeleteTargetGroup
-              - elasticloadbalancing:DescribeTargetGroups
-              - elasticloadbalancing:DescribeTargetGroupAttributes
-              - elasticloadbalancing:ModifyTargetGroup
-              - elasticloadbalancing:ModifyTargetGroupAttributes
-              - elasticloadbalancing:CreateListener
-              - elasticloadbalancing:DeleteListener
-              - elasticloadbalancing:DescribeListeners
-              - elasticloadbalancing:ModifyListener
-              - elasticloadbalancing:DescribeRules
-              - elasticloadbalancing:AddTags
-              - elasticloadbalancing:RemoveTags
-              - elasticloadbalancing:DescribeTags
-              - elasticloadbalancing:RegisterTargets
-              - elasticloadbalancing:DeregisterTargets
-              - elasticloadbalancing:DescribeTargetHealth
-            Resource: "*"
-
-          # ECS — no resource-level support for most actions
-          - Sid: ECSManagement
-            Effect: Allow
-            Action:
-              - ecs:CreateCluster
-              - ecs:DeleteCluster
-              - ecs:DescribeClusters
-              - ecs:PutClusterCapacityProviders
-              - ecs:RegisterTaskDefinition
-              - ecs:DeregisterTaskDefinition
-              - ecs:DescribeTaskDefinition
-              - ecs:ListTaskDefinitions
-              - ecs:CreateService
-              - ecs:UpdateService
-              - ecs:DeleteService
-              - ecs:DescribeServices
-              - ecs:ListServices
-              - ecs:TagResource
-              - ecs:UntagResource
-              - ecs:ListTagsForResource
-            Resource: "*"
-
-          # CloudWatch Logs
-          - Sid: CloudWatchLogsManagement
-            Effect: Allow
-            Action:
-              - logs:CreateLogGroup
-              - logs:DeleteLogGroup
-              - logs:DescribeLogGroups
-              - logs:PutRetentionPolicy
-              - logs:DeleteRetentionPolicy
-              - logs:TagLogGroup
-              - logs:UntagLogGroup
-              - logs:ListTagsLogGroup
-              - logs:TagResource
-              - logs:UntagResource
-              - logs:ListTagsForResource
-            Resource: "*"
-
-          # SSM — wildcard path to cover /webapp/env/network/*, /webapp/env/database/*,
-          # and /github-actions/* written by other stacks and scripts
-          - Sid: SSMManagement
-            Effect: Allow
-            Action:
-              - ssm:PutParameter
-              - ssm:GetParameter
-              - ssm:GetParameters
-              - ssm:GetParametersByPath
-              - ssm:DeleteParameter
-              - ssm:DeleteParameters
-              - ssm:DescribeParameters
-              - ssm:LabelParameterVersion
-              - ssm:AddTagsToResource
-              - ssm:RemoveTagsFromResource
-              - ssm:ListTagsForResource
-            Resource: !Sub "arn:aws:ssm:${Region}:${AwsAccountId}:parameter/*"
-
-          # Lambda — required for the Secrets Manager HostedRotationLambda
-          # that CF creates and invokes automatically for Aurora password rotation
-          - Sid: LambdaManagement
-            Effect: Allow
-            Action:
-              - lambda:CreateFunction
-              - lambda:DeleteFunction
-              - lambda:GetFunction
-              - lambda:UpdateFunctionCode
-              - lambda:UpdateFunctionConfiguration
-              - lambda:InvokeFunction
-              - lambda:ListFunctions
-              - lambda:AddPermission
-              - lambda:RemovePermission
-              - lambda:GetPolicy
-              - lambda:TagResource
-              - lambda:UntagResource
-              - lambda:ListTags
-              - lambda:PutFunctionEventInvokeConfig
-              - lambda:DeleteFunctionEventInvokeConfig
-              - lambda:GetFunctionEventInvokeConfig
             Resource: "*"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -509,14 +176,8 @@ Outputs:
     Export:
       Name: !Sub "${AppName}-GitHubActionsUserArn"
 
-  WebappPolicyArn:
-    Description: ARN of GitHubActionsWebappPolicy
-    Value: !Ref WebappPolicy
+  WebappDeployPolicyArn:
+    Description: ARN of GitHubActionsWebappDeployPolicy
+    Value: !Ref WebappDeployPolicy
     Export:
-      Name: !Sub "${AppName}-GitHubActionsWebappPolicyArn"
-
-  WebappNetworkPolicyArn:
-    Description: ARN of GitHubActionsWebappNetworkPolicy
-    Value: !Ref WebappNetworkPolicy
-    Export:
-      Name: !Sub "${AppName}-GitHubActionsWebappNetworkPolicyArn"
+      Name: !Sub "${AppName}-GitHubActionsWebappDeployPolicyArn"
