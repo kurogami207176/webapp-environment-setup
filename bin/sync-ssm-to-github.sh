@@ -113,18 +113,18 @@ echo "  ✓ All 4 parameters fetched"
 echo ""
 echo "▶ Pushing to GitHub…"
 
-# Secrets (sensitive — stored encrypted by GitHub)
-set_secret "AWS_ACCESS_KEY_ID"     "${AWS_ACCESS_KEY_ID_VAL}"
+# Secret (sensitive — stored encrypted by GitHub)
 set_secret "AWS_SECRET_ACCESS_KEY" "${AWS_SECRET_ACCESS_KEY_VAL}"
-set_secret "AWS_ACCOUNT_ID"        "${AWS_ACCOUNT_ID_VAL}"
 
-# Variable (non-sensitive — stored as plaintext GitHub variable)
-set_variable "AWS_REGION" "${AWS_REGION_VAL}"
+# Variables (non-sensitive — stored as plaintext GitHub variables)
+set_variable "AWS_ACCESS_KEY_ID" "${AWS_ACCESS_KEY_ID_VAL}"
+set_variable "AWS_ACCOUNT_ID"    "${AWS_ACCOUNT_ID_VAL}"
+set_variable "AWS_REGION"        "${AWS_REGION_VAL}"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " ✅  Done!"
 echo ""
-echo " Secrets set  : AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ACCOUNT_ID"
-echo " Variables set: AWS_REGION"
+echo " Secrets set  : AWS_SECRET_ACCESS_KEY"
+echo " Variables set: AWS_ACCESS_KEY_ID, AWS_ACCOUNT_ID, AWS_REGION"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
